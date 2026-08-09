@@ -8,7 +8,7 @@ use regex::Regex;
 lazy_static! {
     static ref DATABRICKS_PAT: Regex = Regex::new(r"dapi[0-9a-fA-F]{32,}").unwrap();
     static ref AWS_KEY: Regex = Regex::new(r"AKIA[0-9A-Z]{16}").unwrap();
-    static ref OPENAI_KEY: Regex = Regex::new(r"sk-[A-Za-z0-9]{20,}").unwrap();
+    static ref OPENAI_KEY: Regex = Regex::new(r"sk-[A-Za-z0-9_-]{20,}").unwrap();
     static ref JWT: Regex = Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap();
     // Assembled from fragments to avoid a literal key-block shape in source.
     static ref PRIVATE_KEY: Regex = Regex::new(
@@ -62,6 +62,15 @@ mod tests {
         assert!(!out.contains("MIIBOgIBAAJB"));
         assert!(!out.contains("eyJdef456"));
         assert!(n >= 3);
+    }
+
+    #[test]
+    fn redacts_openai_proj_key() {
+        let key = format!("sk-proj-{}", "A1b2C3d4E5f6G7h8I9j0K1l2");
+        let (out, n) = scrub(&format!("key={key}"));
+        assert!(!out.contains(&key));
+        assert!(out.contains("[REDACTED:openai-key]"));
+        assert_eq!(n, 1);
     }
 
     #[test]
