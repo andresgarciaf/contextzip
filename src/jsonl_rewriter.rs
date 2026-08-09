@@ -93,6 +93,59 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
         index_record(&record, &mut tool_use_index, &mut first_read_for);
     }
 
+    // Light additional scan: fill content_sha256 for each FirstRead by finding
+    // the matching user tool_result. The text lives in a different record than
+    // where we learn "this is a Read", so we scan user records separately.
+    // Build a reverse map: first-read tool_use_id -> mutable path key.
+    let first_id_to_path: HashMap<String, String> = first_read_for
+        .iter()
+        .map(|(path, fr)| (fr.tool_use_id.clone(), path.clone()))
+        .collect();
+    for line in input.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let Some(use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(path) = first_id_to_path.get(use_id) else {
+                continue;
+            };
+            // Extract text from the block (same logic as block_text_len).
+            let text = match block.get("content") {
+                Some(Value::String(s)) => s.as_str().to_string(),
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|c| c.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => continue,
+            };
+            if let Some(fr) = first_read_for.get_mut(path) {
+                if fr.content_sha256.is_empty() {
+                    fr.content_sha256 = sha256_hex(&text);
+                }
+            }
+        }
+    }
+
     // Second pass: rewrite content of tool_results.
     let mut out = String::with_capacity(input.len());
     for line in input.lines() {
@@ -113,7 +166,7 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             }
         };
 
-        rewrite_record(&mut record, &tool_use_index, &first_read_for, &mut stats);
+        rewrite_record(&mut record, &tool_use_index, &first_read_for, cfg, &mut stats);
 
         let written = serde_json::to_string(&record).unwrap_or_else(|_| line.to_string());
         out.push_str(&written);
@@ -139,9 +192,10 @@ struct ToolUseInfo {
 #[derive(Debug, Clone)]
 struct FirstRead {
     tool_use_id: String,
-    // `content_sha256` will be added back when `contextzip expand` ships and
-    // needs to detect a stale file before substituting the cached read. Kept
-    // out for now to avoid unused-field warnings.
+    /// SHA-256 hex of the tool_result text from the first read. Used by
+    /// `contextzip expand` to detect whether the on-disk file has changed
+    /// since compaction.
+    content_sha256: String,
 }
 
 fn index_record(
@@ -190,6 +244,7 @@ fn index_record(
             if let Some(path) = file_path {
                 first_read_for.entry(path).or_insert_with(|| FirstRead {
                     tool_use_id: id.to_string(),
+                    content_sha256: String::new(),
                 });
             }
         }
@@ -200,6 +255,7 @@ fn rewrite_record(
     record: &mut Value,
     tool_use_index: &HashMap<String, ToolUseInfo>,
     first_read_for: &HashMap<String, FirstRead>,
+    cfg: &CompactConfig,
     stats: &mut CompactStats,
 ) {
     if record.get("type").and_then(Value::as_str) != Some("user") {
@@ -233,9 +289,16 @@ fn rewrite_record(
                 if let Some(path) = info.file_path.as_deref() {
                     if let Some(first) = first_read_for.get(path) {
                         if first.tool_use_id != use_id {
-                            // Repeated read of the same path → replace with reference.
+                            // Repeated read of the same path -> replace with reference.
                             let preview_len = block_text_len(block);
-                            replace_with_read_ref(block, path, &first.tool_use_id, preview_len);
+                            replace_with_read_ref(
+                                block,
+                                path,
+                                &first.tool_use_id,
+                                preview_len,
+                                &first.content_sha256,
+                                cfg.include_paths_in_markers,
+                            );
                             stats.read_results_deduped += 1;
                         }
                     }
@@ -262,19 +325,37 @@ fn block_text_len(block: &Value) -> usize {
         .sum()
 }
 
-fn replace_with_read_ref(block: &mut Value, path: &str, first_id: &str, original_len: usize) {
-    let marker = format!(
-        "[contextzip: dedup — same as Read in tool_use {} ({} → 0 chars). \
-         Re-expand with `contextzip expand` if the file at {} has changed.]",
-        first_id, original_len, path
-    );
+fn replace_with_read_ref(
+    block: &mut Value,
+    path: &str,
+    first_id: &str,
+    original_len: usize,
+    content_sha256: &str,
+    include_path: bool,
+) {
+    let marker = if include_path {
+        format!(
+            "[contextzip: dedup - same as Read in tool_use {} ({} -> 0 chars). \
+             Re-expand with `contextzip expand` if the file at {} has changed.]",
+            first_id, original_len, path
+        )
+    } else {
+        format!(
+            "[contextzip: dedup - same as Read in tool_use {} ({} -> 0 chars). \
+             Re-expand with `contextzip expand` to restore.]",
+            first_id, original_len
+        )
+    };
     block["content"] = json!([{ "type": "text", "text": marker }]);
     // Annotation so `expand` can find these refs without parsing the marker text.
+    // file_path is empty when include_paths_in_markers is false to avoid leaking
+    // absolute paths into the compressed sidecar.
     block["contextzip_compressed"] = json!({
         "axis": "ReadDedup",
         "first_tool_use_id": first_id,
-        "file_path": path,
+        "file_path": if include_path { path } else { "" },
         "original_chars": original_len,
+        "content_sha256": content_sha256,
     });
 }
 
@@ -564,6 +645,43 @@ mod tests {
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
         assert!(!out.contains(&pat), "secret leaked into sidecar");
         assert!(stats.secrets_redacted >= 1);
+    }
+
+    #[test]
+    fn read_dedup_annotation_carries_sha_and_respects_path_gate() {
+        // IDs must match between assistant tool_use and user tool_result.
+        let records = [
+            make_assistant_read("r1", "/tmp/x.rs"),
+            make_user_tool_result("r1", "fn main() {}"),
+            make_assistant_read("r2", "/tmp/x.rs"),
+            make_user_tool_result("r2", "fn main() {}"),
+        ];
+        let mut cfg = crate::config::CompactConfig::default();
+        cfg.include_paths_in_markers = false;
+        let (out, _) = compact_session_str(&jsonl(&records), &cfg);
+        assert!(out.contains("\"content_sha256\""), "sha must be recorded for staleness checks");
+        // Path must be absent from the dedup marker and annotation written for
+        // the second (deduplicated) user tool_result record. We verify by
+        // checking the rewritten user record (line 4) directly.
+        let lines: Vec<&str> = out.lines().collect();
+        // Line index 3 is the 4th record - the deduplicated user tool_result.
+        let dedup_line = lines[3];
+        assert!(
+            !dedup_line.contains("/tmp/x.rs"),
+            "path must not appear in dedup marker when gate is off, got: {}",
+            dedup_line
+        );
+        // annotation must have empty file_path
+        let v: Value = serde_json::from_str(dedup_line).unwrap();
+        let file_path = v
+            .get("message").and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("contextzip_compressed"))
+            .and_then(|c| c.get("file_path"))
+            .and_then(Value::as_str)
+            .unwrap_or("NOT_FOUND");
+        assert_eq!(file_path, "", "file_path in annotation must be empty, got: {}", file_path);
     }
 
     #[test]
