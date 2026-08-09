@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::CompactConfig;
+
 /// Aggregated metrics returned to the CLI for the user-facing summary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CompactStats {
@@ -32,6 +34,7 @@ pub struct CompactStats {
     pub bytes_out: usize,
     pub bash_results_recompressed: usize,
     pub read_results_deduped: usize,
+    pub secrets_redacted: usize,
 }
 
 impl CompactStats {
@@ -50,7 +53,8 @@ pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
     let raw = fs::read_to_string(input)
         .with_context(|| format!("Failed to read session file: {}", input.display()))?;
 
-    let (out, stats) = compact_session_str(&raw);
+    let cfg = crate::config::compact_config();
+    let (out, stats) = compact_session_str(&raw, &cfg);
 
     let mut sidecar = input.to_path_buf();
     let new_name = match input.file_name().and_then(|s| s.to_str()) {
@@ -67,7 +71,7 @@ pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
 
 /// Pure-string compaction: takes the raw JSONL, returns the rewritten JSONL.
 /// Lines that aren't valid JSON are passed through verbatim.
-pub fn compact_session_str(input: &str) -> (String, CompactStats) {
+pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, CompactStats) {
     let mut stats = CompactStats {
         bytes_in: input.len(),
         ..Default::default()
@@ -117,6 +121,11 @@ pub fn compact_session_str(input: &str) -> (String, CompactStats) {
         stats.records_written += 1;
     }
 
+    if cfg.redact {
+        let (scrubbed, n) = crate::redact::scrub(&out);
+        stats.secrets_redacted = n;
+        out = scrubbed;
+    }
     stats.bytes_out = out.len();
     (out, stats)
 }
@@ -441,7 +450,7 @@ mod tests {
             make_user_tool_result("u2", "fn main() { println!(\"hi\"); }"),
         ];
         let input = jsonl(&records);
-        let (out, stats) = compact_session_str(&input);
+        let (out, stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
 
         assert_eq!(stats.read_results_deduped, 1);
         assert!(
@@ -464,7 +473,7 @@ mod tests {
             make_assistant_read("u2", "/abs/b.rs"),
             make_user_tool_result("u2", "let b = 2;"),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records));
+        let (out, stats) = compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.read_results_deduped, 0);
         assert!(out.contains("let a = 1;"));
         assert!(out.contains("let b = 2;"));
@@ -477,7 +486,7 @@ mod tests {
             make_assistant_bash("b1", "noisy"),
             make_user_tool_result("b1", &noisy),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records));
+        let (out, stats) = compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.bash_results_recompressed, 1);
         // Repeated 'ok' lines should be collapsed into a tally
         assert!(out.contains("(×"), "expected tally marker in {}", out);
@@ -492,8 +501,8 @@ mod tests {
             make_user_tool_result("b1", &noisy),
         ];
         let input = jsonl(&records);
-        let (first_out, first_stats) = compact_session_str(&input);
-        let (second_out, second_stats) = compact_session_str(&first_out);
+        let (first_out, first_stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
+        let (second_out, second_stats) = compact_session_str(&first_out, &crate::config::CompactConfig::default());
         assert_eq!(first_stats.bash_results_recompressed, 1);
         assert_eq!(second_stats.bash_results_recompressed, 0);
         assert_eq!(first_out, second_out);
@@ -502,7 +511,7 @@ mod tests {
     #[test]
     fn malformed_lines_pass_through_unchanged() {
         let input = "this is not json\n{\"type\":\"user\"}\nalso not json\n";
-        let (out, stats) = compact_session_str(input);
+        let (out, stats) = compact_session_str(input, &crate::config::CompactConfig::default());
         assert!(out.contains("this is not json"));
         assert!(out.contains("also not json"));
         assert_eq!(stats.records_read, 3);
@@ -511,7 +520,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_output() {
-        let (out, stats) = compact_session_str("");
+        let (out, stats) = compact_session_str("", &crate::config::CompactConfig::default());
         assert_eq!(out, "");
         assert_eq!(stats.records_read, 0);
         assert_eq!(stats.bytes_in, 0);
@@ -527,7 +536,7 @@ mod tests {
             make_user_tool_result("b1", small),
         ];
         let original = jsonl(&records);
-        let (out, _) = compact_session_str(&original);
+        let (out, _) = compact_session_str(&original, &crate::config::CompactConfig::default());
         assert!(out.len() <= original.len() + 10); // allow trailing newline diff
     }
 
@@ -545,6 +554,16 @@ mod tests {
             ..Default::default()
         };
         assert!((s.percent_saved() - 75.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn secret_in_tool_result_never_survives_to_output() {
+        let pat = format!("dapi{}", "0".repeat(34));
+        let records = [make_user_tool_result("u1", &format!("export TOKEN={pat}"))];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert!(!out.contains(&pat), "secret leaked into sidecar");
+        assert!(stats.secrets_redacted >= 1);
     }
 
     #[test]

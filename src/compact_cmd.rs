@@ -10,7 +10,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::jsonl_rewriter;
+use crate::{config, jsonl_rewriter};
 
 pub fn run_with_options(target: &str, dry_run: bool, verbose: u8) -> Result<()> {
     let session_path = resolve_session_path(target)?;
@@ -26,7 +26,7 @@ pub fn run_with_options(target: &str, dry_run: bool, verbose: u8) -> Result<()> 
     let stats = if dry_run {
         let raw = std::fs::read_to_string(&session_path)
             .with_context(|| format!("Failed to read session: {}", session_path.display()))?;
-        jsonl_rewriter::compact_session_str(&raw).1
+        jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1
     } else {
         let (_sidecar, stats) = jsonl_rewriter::compact_session_file(&session_path)
             .with_context(|| format!("Failed to compact session: {}", session_path.display()))?;
@@ -87,7 +87,7 @@ pub fn run_all_sessions(dry_run: bool, verbose: u8) -> Result<()> {
                     // good enough for an analytics summary, and acceptable for
                     // batch runs (most sessions are <10 MB).
                     if let Ok(raw) = std::fs::read_to_string(&path) {
-                        let s = jsonl_rewriter::compact_session_str(&raw).1;
+                        let s = jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1;
                         total_in += s.bytes_in;
                         total_out += s.bytes_out;
                         total_dedup += s.read_results_deduped;
