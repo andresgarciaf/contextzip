@@ -171,7 +171,7 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
     // backup.exists() guard. The original rename was atomic; this write path is
     // not, so we remove on failure to close the partial-file window.
     std::fs::write(&backup, &backup_content)
-        .map_err(|e| { let _ = std::fs::remove_file(&backup); e })
+        .inspect_err(|_| { let _ = std::fs::remove_file(&backup); })
         .with_context(|| format!("Failed to write backup {}", backup.display()))?;
     if let Err(e) = std::fs::remove_file(&session_path) {
         // Fail closed: remove the backup so original remains the live session.
