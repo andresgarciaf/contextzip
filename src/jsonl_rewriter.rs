@@ -59,6 +59,7 @@ pub struct CompactStats {
     pub generic_results_capped: usize,
     pub signatures_dropped: usize,
     pub media_referenced: usize,
+    pub sidecars_deduped: usize,
 }
 
 impl CompactStats {
@@ -483,6 +484,7 @@ fn rewrite_record(
 pub fn rewrite_record_metadata(record: &mut Value, cfg: &CompactConfig, stats: &mut CompactStats) {
     drop_thinking_signatures(record, stats);
     replace_media_with_sha_markers(record, cfg, stats);
+    dedup_sidecar(record, stats);
 }
 
 /// SignatureDrop axis: removes replay-only crypto signatures from thinking
@@ -638,6 +640,120 @@ fn replace_media_with_sha_markers(
     file_obj.insert("base64".to_string(), json!(marker));
     file_obj.insert("contextzip_media".to_string(), annotation);
     stats.media_referenced += 1;
+}
+
+/// SidecarDedup axis: collapses `record["toolUseResult"]` when its primary
+/// payload text is byte-equal to the `tool_result` block in
+/// `record["message"]["content"]`.
+///
+/// Extraction order for the sidecar payload:
+///   1. `toolUseResult.stdout`
+///   2. `toolUseResult.originalFile`
+///   3. `toolUseResult.content`
+///   4. `toolUseResult.file.content`
+///
+/// The message tool_result text is extracted the same way as `block_text_len`
+/// (content may be a bare string or an array of {type,text} objects).
+///
+/// Only collapses on exact byte equality AND when the payload is large enough
+/// that the replacement marker is smaller (never-inflate). Partial matches are
+/// never collapsed - only exact equality is safe; a near-match means the sidecar
+/// has data that does not exist in message.content, and dropping it would lose
+/// information.
+///
+/// Idempotent: skips if `toolUseResult.contextzip_ref` is already present.
+fn dedup_sidecar(record: &mut Value, stats: &mut CompactStats) {
+    // Idempotency: already processed.
+    if record
+        .get("toolUseResult")
+        .and_then(|t| t.get("contextzip_ref"))
+        .is_some()
+    {
+        return;
+    }
+
+    // Extract the sidecar's primary payload text (first present string).
+    let sidecar_text: String = {
+        let Some(tur) = record.get("toolUseResult") else {
+            return;
+        };
+        let candidate = tur
+            .get("stdout")
+            .or_else(|| tur.get("originalFile"))
+            .or_else(|| tur.get("content"))
+            .or_else(|| tur.get("file").and_then(|f| f.get("content")));
+        match candidate.and_then(Value::as_str) {
+            Some(s) => s.to_string(),
+            None => return,
+        }
+    };
+
+    // Extract the message.content tool_result text.
+    let content_len = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    let mut tool_result_text: Option<String> = None;
+    for i in 0..content_len {
+        let block_type = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i))
+            .and_then(|b| b.get("type"))
+            .and_then(Value::as_str);
+        if block_type != Some("tool_result") {
+            continue;
+        }
+        let block = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i));
+        let text = match block.and_then(|b| b.get("content")) {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        tool_result_text = Some(text);
+        break;
+    }
+
+    let content_text = match tool_result_text {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Only collapse on exact byte equality.
+    if sidecar_text != content_text {
+        return;
+    }
+
+    let payload_len = sidecar_text.len();
+
+    // Never-inflate: the replacement object must be smaller than the payload.
+    // The replacement is ~120 chars; require payload > 120 to be conservative.
+    if payload_len <= 120 {
+        return;
+    }
+
+    if let Some(tur) = record.get_mut("toolUseResult") {
+        *tur = json!({
+            "contextzip_ref": "message.content",
+            "contextzip_compressed": {
+                "axis": "SidecarDedup",
+                "original_chars": payload_len
+            }
+        });
+        stats.sidecars_deduped += 1;
+    }
 }
 
 fn block_text_len(block: &Value) -> usize {
@@ -1563,6 +1679,97 @@ mod tests {
         assert_eq!(
             second_stats.signatures_dropped, 0,
             "second pass must not re-drop"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn sidecar_deduped_when_byte_equal_and_aggressive() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.sidecars_deduped, 1);
+        assert!(
+            out.contains("contextzip_ref"),
+            "sidecar collapses to a reference"
+        );
+        // The message.content copy is still present (only the duplicate sidecar collapses)
+        let v: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert!(v["message"]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("line one"));
+    }
+
+    #[test]
+    fn sidecar_left_intact_when_differs() {
+        let rec = json!({
+            "type":"user",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"AAA"}]},
+            "toolUseResult":{"type":"text","stdout":"DIFFERENT CONTENT ENTIRELY that is quite a bit longer than AAA"}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(
+            s.sidecars_deduped, 0,
+            "differing sidecar must be left intact"
+        );
+        assert!(out.contains("DIFFERENT CONTENT"));
+    }
+
+    #[test]
+    fn sidecar_dedup_off_when_not_aggressive() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let off = CompactConfig::default();
+        let (out, s) = compact_session_str(&input, &off);
+        assert_eq!(
+            s.sidecars_deduped, 0,
+            "must be untouched when not aggressive"
+        );
+        assert!(
+            !out.contains("contextzip_ref"),
+            "no ref when aggressive is off"
+        );
+    }
+
+    #[test]
+    fn sidecar_dedup_is_idempotent() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        assert_eq!(first_stats.sidecars_deduped, 1);
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(
+            second_stats.sidecars_deduped, 0,
+            "second pass must not re-dedup"
         );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
