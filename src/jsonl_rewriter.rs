@@ -37,6 +37,7 @@ pub struct CompactStats {
     pub grepglob_results_deduped: usize,
     pub bash_cmds_deduped: usize,
     pub secrets_redacted: usize,
+    pub generic_results_capped: usize,
 }
 
 impl CompactStats {
@@ -449,7 +450,11 @@ fn rewrite_record(
                     stats.bash_results_recompressed += 1;
                 }
             }
-            _ => {}
+            _ => {
+                if generic_cap_block(block, cfg) {
+                    stats.generic_results_capped += 1;
+                }
+            }
         }
     }
 }
@@ -562,6 +567,61 @@ fn recompress_bash_block(block: &mut Value) -> bool {
         "original_chars": original.len(),
         "compressed_chars": new_text.len(),
         "content_sha256": sha256_hex(&original),
+    });
+    true
+}
+
+/// Cap oversized tool_results from unrecognized tools (the `_ =>` catch-all).
+/// ANSI-strips, keeps the first `cfg.generic_cap_lines` lines, appends a drop
+/// marker. Never inflates: only writes back if the result is smaller.
+/// Returns true when the block was rewritten.
+fn generic_cap_block(block: &mut Value, cfg: &crate::config::CompactConfig) -> bool {
+    if block.get("contextzip_compressed").is_some() {
+        return false;
+    }
+    let original = match block.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return false,
+    };
+    if original.is_empty() {
+        return false;
+    }
+    // Only act when the text exceeds at least one threshold.
+    let line_count = original.lines().count();
+    if original.len() <= cfg.generic_cap_chars && line_count <= cfg.generic_cap_lines {
+        return false;
+    }
+
+    let stripped = crate::ansi_filter::filter_ansi(&original);
+    let lines: Vec<&str> = stripped.lines().collect();
+    let cap = cfg.generic_cap_lines;
+    let new_text = if lines.len() > cap {
+        let dropped = lines.len() - cap;
+        let mut kept = lines[..cap].join("\n");
+        kept.push_str(&format!(
+            "\n[contextzip: GenericResultCap - {} more lines dropped]",
+            dropped
+        ));
+        kept
+    } else {
+        stripped.clone()
+    };
+
+    // Never-inflate guard.
+    if new_text.len() >= original.len() {
+        return false;
+    }
+
+    block["content"] = json!([{ "type": "text", "text": new_text }]);
+    block["contextzip_compressed"] = json!({
+        "axis": "GenericResultCap",
+        "original_chars": original.len(),
+        "compressed_chars": new_text.len(),
     });
     true
 }
@@ -1009,5 +1069,48 @@ mod tests {
             original.len(),
             out.len()
         );
+    }
+
+    #[test]
+    fn generic_cap_trims_oversized_unknown_tool_result() {
+        let big = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &big),
+        ];
+        let cfg = crate::config::CompactConfig::default(); // 200-line cap
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.generic_results_capped, 1);
+        assert!(out.contains("more lines"), "missing drop marker in {}", out);
+    }
+
+    #[test]
+    fn generic_cap_leaves_small_results_untouched() {
+        let small = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        // small is well under both thresholds (200 lines, 4000 chars)
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &small),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.generic_results_capped, 0, "small result must not be capped");
+        assert!(out.contains("line 0"), "small result content must be preserved");
+    }
+
+    #[test]
+    fn generic_cap_is_idempotent() {
+        let big = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &big),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.generic_results_capped, 1);
+        assert_eq!(second_stats.generic_results_capped, 0, "second pass must not re-cap");
+        assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 }
