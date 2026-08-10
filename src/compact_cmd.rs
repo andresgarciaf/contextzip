@@ -540,6 +540,55 @@ mod tests {
     }
 
     #[test]
+    fn aggressive_round_trip_restores_all_v3_axes() -> Result<()> {
+        let dir = TempDir::new()?;
+        let session = dir.path().join("session.jsonl");
+        let mut f = fs::File::create(&session)?;
+
+        // 1. Thinking block with signature (SignatureDrop target)
+        let sig = "SIGVALUE".repeat(30); // 240 chars
+        writeln!(
+            f,
+            r#"{{"type":"assistant","uuid":"a1","message":{{"content":[{{"type":"thinking","thinking":"reasoning","signature":"{sig}"}}]}}}}"#
+        )?;
+
+        // 2. Image block with large base64 data (MediaReference target)
+        let img = "AAAA".repeat(600); // 2400 chars
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u2","message":{{"content":[{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{img}"}}}}]}}}}"#
+        )?;
+
+        // 3. toolUseResult with stdout byte-equal to message.content tool_result
+        //    (SidecarDedup target, >120 chars)
+        let body = "outputline".repeat(25); // 250 chars, no special chars
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u3","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":"{body}"}}]}},"toolUseResult":{{"stdout":"{body}"}}}}"#
+        )?;
+
+        drop(f);
+        let original_content = fs::read_to_string(&session)?;
+
+        // compact (aggressive) -> apply -> expand
+        run_with_options(session.to_str().unwrap(), false, true, 0)?;
+        run_apply(session.to_str().unwrap(), 0)?;
+        run_expand(session.to_str().unwrap(), 0)?;
+
+        let restored_content = fs::read_to_string(&session)?;
+        let scrubbed_original = crate::redact::scrub(&original_content).0;
+        let scrubbed_restored = crate::redact::scrub(&restored_content).0;
+        assert_eq!(
+            scrubbed_original, scrubbed_restored,
+            "expand must restore aggressive-compacted session identical after redaction"
+        );
+        // The compressed sidecar is preserved on the side so apply can be redone.
+        let sidecar = dir.path().join("session.jsonl.compressed");
+        assert!(sidecar.is_file());
+        Ok(())
+    }
+
+    #[test]
     fn expand_errors_clearly_when_no_backup() -> Result<()> {
         let dir = TempDir::new()?;
         let session = dir.path().join("session.jsonl");

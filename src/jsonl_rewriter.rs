@@ -26,10 +26,39 @@
 //!   WebFetch, etc.) is ANSI-stripped and line-capped at the configured limit.
 //!   Does not deduplicate; only reduces runaway payloads.
 //!
+//! Four additional axes ship in v0.3 and are gated behind `--aggressive` /
+//! `compact.aggressive` in config (DEFAULT OFF). They touch Claude-Code-internal
+//! fields that are safe to compact for context reduction but should only be
+//! promoted via `contextzip apply` after the mandatory resume test confirms
+//! Claude Code can still open and continue the session. All four are fully
+//! reversible: `contextzip expand` restores the original `.jsonl` from the `.bak`
+//! written by `apply`.
+//!
+//! - **`SignatureDrop`** - removes replay-only crypto signatures from `thinking`
+//!   blocks in `message.content`. The signature is replaced with a
+//!   `contextzip_sig` annotation carrying its SHA-256 and byte length so staleness
+//!   can be detected at expand time.
+//!
+//! - **`MediaReference`** - replaces inlined base64 image data in
+//!   `message.content` image blocks (`source.data`) and in
+//!   `toolUseResult.file.base64` with a short `[contextzip: media sha256=...]`
+//!   marker. The original byte count and SHA-256 are recorded as a sibling
+//!   `contextzip_media` annotation.
+//!
+//! - **`SidecarDedup`** - collapses the `toolUseResult` field when its primary
+//!   payload (stdout / originalFile / content / file.content) is byte-equal to
+//!   the corresponding `message.content` tool_result text. The duplicated payload
+//!   is removed and a `contextzip_ref` pointer is inserted; sibling fields
+//!   (stderr, interrupted, etc.) are always preserved.
+//!
+//! - **`McpJsonCompact`** - minifies MCP tool_result JSON payloads and unwraps
+//!   double-encoded `{"result":"{...}"}` patterns. Acts only when the compacted
+//!   form is strictly smaller than the original (never-inflate invariant).
+//!
 //! A secret-redaction scrub pass (`crate::redact`) runs over the compacted output
 //! before any sidecar or `.bak` write when `compact.redact` is enabled in config.
-//! All five axes are reversible, idempotent, and guaranteed never to inflate the
-//! token count above the original.
+//! All axes are reversible, idempotent, and guaranteed never to inflate the token
+//! count above the original.
 //!
 //! Records are never removed and the `uuid` / `parentUuid` chain is never
 //! altered - only `tool_result` content payloads are rewritten. The original
