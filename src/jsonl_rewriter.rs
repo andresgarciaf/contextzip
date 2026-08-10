@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,7 @@ pub struct CompactStats {
     pub bytes_out: usize,
     pub bash_results_recompressed: usize,
     pub read_results_deduped: usize,
+    pub grepglob_results_deduped: usize,
     pub secrets_redacted: usize,
 }
 
@@ -77,11 +78,13 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
         ..Default::default()
     };
 
-    // Two-pass: first pass collects which Read+file_path → first tool_use_id.
-    // Second pass rewrites repeated Read tool_results, and recompresses Bash
-    // tool_results unconditionally.
+    // Two-pass: first pass collects which Read+file_path → first tool_use_id,
+    // and which Grep/Glob args_key → first tool_use_id.
+    // Second pass rewrites repeated Read/Grep/Glob tool_results, and
+    // recompresses Bash tool_results unconditionally.
     let mut tool_use_index: HashMap<String, ToolUseInfo> = HashMap::new();
     let mut first_read_for: HashMap<String, FirstRead> = HashMap::new();
+    let mut first_grepglob_for: HashMap<String, FirstResult> = HashMap::new();
 
     for line in input.lines() {
         if line.trim().is_empty() {
@@ -90,7 +93,12 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        index_record(&record, &mut tool_use_index, &mut first_read_for);
+        index_record(
+            &record,
+            &mut tool_use_index,
+            &mut first_read_for,
+            &mut first_grepglob_for,
+        );
     }
 
     // Light additional scan: fill content_sha256 for each FirstRead by finding
@@ -166,7 +174,14 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             }
         };
 
-        rewrite_record(&mut record, &tool_use_index, &first_read_for, cfg, &mut stats);
+        rewrite_record(
+            &mut record,
+            &tool_use_index,
+            &first_read_for,
+            &first_grepglob_for,
+            cfg,
+            &mut stats,
+        );
 
         let written = serde_json::to_string(&record).unwrap_or_else(|_| line.to_string());
         out.push_str(&written);
@@ -187,6 +202,14 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
 struct ToolUseInfo {
     name: String,
     file_path: Option<String>,
+    /// Normalized args key for Grep/Glob dedup (BTreeMap-serialized input JSON).
+    args_key: Option<String>,
+}
+
+/// First occurrence of a Grep/Glob with a given args_key.
+#[derive(Debug, Clone)]
+struct FirstResult {
+    tool_use_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +225,7 @@ fn index_record(
     record: &Value,
     tool_use_index: &mut HashMap<String, ToolUseInfo>,
     first_read_for: &mut HashMap<String, FirstRead>,
+    first_grepglob_for: &mut HashMap<String, FirstResult>,
 ) {
     if record.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
@@ -232,11 +256,21 @@ fn index_record(
             .and_then(Value::as_str)
             .map(String::from);
 
+        // Compute a stable args_key for Grep/Glob by sorting input keys via BTreeMap.
+        let args_key = match name.as_str() {
+            "Grep" | "Glob" => block.get("input").and_then(|input| {
+                let map: BTreeMap<String, Value> = serde_json::from_value(input.clone()).ok()?;
+                serde_json::to_string(&map).ok()
+            }),
+            _ => None,
+        };
+
         tool_use_index.insert(
             id.to_string(),
             ToolUseInfo {
                 name: name.clone(),
                 file_path: file_path.clone(),
+                args_key: args_key.clone(),
             },
         );
 
@@ -248,6 +282,16 @@ fn index_record(
                 });
             }
         }
+
+        if name == "Grep" || name == "Glob" {
+            if let Some(key) = args_key {
+                first_grepglob_for
+                    .entry(key)
+                    .or_insert_with(|| FirstResult {
+                        tool_use_id: id.to_string(),
+                    });
+            }
+        }
     }
 }
 
@@ -255,6 +299,7 @@ fn rewrite_record(
     record: &mut Value,
     tool_use_index: &HashMap<String, ToolUseInfo>,
     first_read_for: &HashMap<String, FirstRead>,
+    first_grepglob_for: &HashMap<String, FirstResult>,
     cfg: &CompactConfig,
     stats: &mut CompactStats,
 ) {
@@ -271,6 +316,10 @@ fn rewrite_record(
 
     for block in content.iter_mut() {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        // Idempotency: skip already-compressed blocks.
+        if block.get("contextzip_compressed").is_some() {
             continue;
         }
         let Some(use_id) = block
@@ -300,6 +349,22 @@ fn rewrite_record(
                                 cfg.include_paths_in_markers,
                             );
                             stats.read_results_deduped += 1;
+                        }
+                    }
+                }
+            }
+            "Grep" | "Glob" => {
+                if let Some(key) = info.args_key.as_deref() {
+                    if let Some(first) = first_grepglob_for.get(key) {
+                        if first.tool_use_id != use_id {
+                            let preview_len = block_text_len(block);
+                            replace_with_generic_ref(
+                                block,
+                                "GrepGlobDedup",
+                                &first.tool_use_id,
+                                preview_len,
+                            );
+                            stats.grepglob_results_deduped += 1;
                         }
                     }
                 }
@@ -356,6 +421,26 @@ fn replace_with_read_ref(
         "file_path": if include_path { path } else { "" },
         "original_chars": original_len,
         "content_sha256": content_sha256,
+    });
+}
+
+/// Generic reference marker for dedup axes other than ReadDedup.
+/// Shared by GrepGlobDedup (Task 6) and BashCmdDedup (Task 7).
+pub fn replace_with_generic_ref(
+    block: &mut Value,
+    axis: &str,
+    first_id: &str,
+    original_len: usize,
+) {
+    let marker = format!(
+        "[contextzip: dedup {} - same as tool_use {} ({} -> 0 chars)]",
+        axis, first_id, original_len
+    );
+    block["content"] = json!([{ "type": "text", "text": marker }]);
+    block["contextzip_compressed"] = json!({
+        "axis": axis,
+        "first_tool_use_id": first_id,
+        "original_chars": original_len,
     });
 }
 
@@ -478,15 +563,7 @@ mod tests {
     use super::*;
 
     fn make_assistant_read(id: &str, file_path: &str) -> Value {
-        json!({
-            "type": "assistant",
-            "uuid": format!("ass-{}", id),
-            "message": {
-                "content": [
-                    { "type": "tool_use", "id": id, "name": "Read", "input": { "file_path": file_path } }
-                ]
-            }
-        })
+        make_assistant_tool(id, "Read", json!({ "file_path": file_path }))
     }
 
     fn make_user_tool_result(id: &str, text: &str) -> Value {
@@ -502,12 +579,16 @@ mod tests {
     }
 
     fn make_assistant_bash(id: &str, command: &str) -> Value {
+        make_assistant_tool(id, "Bash", json!({ "command": command }))
+    }
+
+    fn make_assistant_tool(id: &str, name: &str, input: Value) -> Value {
         json!({
             "type": "assistant",
             "uuid": format!("ass-{}", id),
             "message": {
                 "content": [
-                    { "type": "tool_use", "id": id, "name": "Bash", "input": { "command": command } }
+                    { "type": "tool_use", "id": id, "name": name, "input": input }
                 ]
             }
         })
@@ -691,5 +772,51 @@ mod tests {
             h,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
+    }
+
+    #[test]
+    fn grep_dedup_replaces_repeat_with_reference() {
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g1", "src/a.rs:1: fn a\nsrc/b.rs:2: fn b"),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g2", "src/a.rs:1: fn a\nsrc/b.rs:2: fn b"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.grepglob_results_deduped, 1);
+        assert!(out.contains("GrepGlobDedup"), "missing GrepGlobDedup marker in {}", out);
+    }
+
+    #[test]
+    fn grep_dedup_does_not_touch_unique_results() {
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g1", "src/a.rs:1: fn a"),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"struct ","path":"src"})),
+            make_user_tool_result("g2", "src/b.rs:5: struct Foo"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.grepglob_results_deduped, 0);
+        assert!(out.contains("fn a"));
+        assert!(out.contains("struct Foo"));
+    }
+
+    #[test]
+    fn grep_dedup_is_idempotent() {
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g1", "src/a.rs:1: fn a\nsrc/b.rs:2: fn b"),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g2", "src/a.rs:1: fn a\nsrc/b.rs:2: fn b"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.grepglob_results_deduped, 1);
+        assert_eq!(second_stats.grepglob_results_deduped, 0, "second pass must not re-dedup");
+        assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 }
