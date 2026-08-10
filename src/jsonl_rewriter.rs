@@ -60,6 +60,7 @@ pub struct CompactStats {
     pub signatures_dropped: usize,
     pub media_referenced: usize,
     pub sidecars_deduped: usize,
+    pub mcp_results_compacted: usize,
 }
 
 impl CompactStats {
@@ -468,6 +469,13 @@ fn rewrite_record(
                     }
                 } else if recompress_bash_block(block) {
                     stats.bash_results_recompressed += 1;
+                }
+            }
+            name if name.starts_with("mcp__") && cfg.aggressive => {
+                // mcp_results_compacted is incremented inside the helper when it acts.
+                // If the block is non-JSON or already minimal, fall through to generic cap.
+                if !mcp_json_compact_block(block, stats) && generic_cap_block(block, cfg) {
+                    stats.generic_results_capped += 1;
                 }
             }
             _ => {
@@ -1017,6 +1025,81 @@ fn flush_repeat(last_line: &mut Option<String>, count: &mut usize) -> Option<Str
     } else {
         Some(format!("{} (×{})", line, n))
     }
+}
+
+/// McpJsonCompact axis: minifies MCP tool_result JSON payloads and unwraps
+/// double-encoded `{"result":"{...}"}` patterns.
+///
+/// If the block text parses as JSON:
+///   - Check for double-encoding: a JSON object where the `result` field is a
+///     string that itself parses as JSON. If so, unwrap to the inner value.
+///   - Re-serialize compact (no whitespace/indentation).
+///   - Never-inflate: only replace when the compacted form is strictly shorter.
+///   - Annotate with contextzip_compressed for idempotency and expand support.
+///
+/// If the text does not parse as JSON, the block is left untouched (fallback-safe).
+/// Returns true when the block was rewritten.
+fn mcp_json_compact_block(block: &mut Value, stats: &mut CompactStats) -> bool {
+    // Idempotency guard is already applied by the caller, but double-check.
+    if block.get("contextzip_compressed").is_some() {
+        return false;
+    }
+    let original = match block.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return false,
+    };
+    if original.is_empty() {
+        return false;
+    }
+
+    // Attempt JSON parse - if it fails, leave the block untouched.
+    let parsed: Value = match serde_json::from_str(&original) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Unwrap double-encoding: {"result": "<JSON string>"} pattern.
+    // The `result` value must be a string that itself parses as JSON.
+    let unwrapped = if let Value::Object(ref obj) = parsed {
+        if obj.len() == 1 {
+            if let Some(Value::String(inner_str)) = obj.get("result") {
+                serde_json::from_str::<Value>(inner_str).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let target = unwrapped.as_ref().unwrap_or(&parsed);
+    let compacted = match serde_json::to_string(target) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Never-inflate: only replace if strictly smaller.
+    if compacted.len() >= original.len() {
+        return false;
+    }
+
+    let original_chars = original.len();
+    let compressed_chars = compacted.len();
+    block["content"] = json!([{ "type": "text", "text": compacted }]);
+    block["contextzip_compressed"] = json!({
+        "axis": "McpJsonCompact",
+        "original_chars": original_chars,
+        "compressed_chars": compressed_chars,
+    });
+    stats.mcp_results_compacted += 1;
+    true
 }
 
 fn sha256_hex(input: &str) -> String {
@@ -1805,6 +1888,48 @@ mod tests {
         assert!(
             v["toolUseResult"]["stdout"].is_null(),
             "matched field must be removed"
+        );
+    }
+
+    #[test]
+    fn mcp_json_compacted_when_aggressive() {
+        // double-encoded {"result":"{...}"} with whitespace
+        let inner = r#"{  "email" : "a@b.com" ,  "team" : "Pacifico"  }"#;
+        let payload = serde_json::json!({"result": inner}).to_string();
+        let records = [
+            make_assistant_tool("m1", "mcp__sts__ping", json!({})),
+            make_user_tool_result("m1", &payload),
+        ];
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&jsonl(&records), &on);
+        assert_eq!(s.mcp_results_compacted, 1);
+        // minified: no double-space, inner unwrapped
+        assert!(!out.contains("  \"email\""));
+        // aggressive OFF -> untouched by MCP axis
+        let (out_off, s_off) = compact_session_str(&jsonl(&records), &CompactConfig::default());
+        assert_eq!(s_off.mcp_results_compacted, 0);
+        let _ = out_off; // suppress unused warning
+    }
+
+    #[test]
+    fn mcp_non_json_result_left_unchanged() {
+        let plain = "pong - server alive";
+        let records = [
+            make_assistant_tool("m1", "mcp__sts__ping", json!({})),
+            make_user_tool_result("m1", plain),
+        ];
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&jsonl(&records), &on);
+        assert_eq!(s.mcp_results_compacted, 0);
+        assert!(
+            out.contains(plain),
+            "plain-text MCP result must be preserved"
         );
     }
 
