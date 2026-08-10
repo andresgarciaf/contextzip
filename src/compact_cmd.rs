@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{config, jsonl_rewriter};
 
-pub fn run_with_options(target: &str, dry_run: bool, verbose: u8) -> Result<()> {
+pub fn run_with_options(target: &str, dry_run: bool, aggressive: bool, verbose: u8) -> Result<()> {
     let session_path = resolve_session_path(target)?;
 
     if verbose > 0 {
@@ -23,10 +23,13 @@ pub fn run_with_options(target: &str, dry_run: bool, verbose: u8) -> Result<()> 
         );
     }
 
+    let mut cfg = config::compact_config();
+    cfg.aggressive |= aggressive;
+
     let stats = if dry_run {
         let raw = std::fs::read_to_string(&session_path)
             .with_context(|| format!("Failed to read session: {}", session_path.display()))?;
-        jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1
+        jsonl_rewriter::compact_session_str(&raw, &cfg).1
     } else {
         let (_sidecar, stats) = jsonl_rewriter::compact_session_file(&session_path)
             .with_context(|| format!("Failed to compact session: {}", session_path.display()))?;
@@ -40,7 +43,7 @@ pub fn run_with_options(target: &str, dry_run: bool, verbose: u8) -> Result<()> 
 /// Compact every `.jsonl` under `~/.claude/projects/<project>/`. Skips files
 /// that already have a sidecar so re-running is idempotent. Reports per-session
 /// progress on stderr and aggregates totals at the end.
-pub fn run_all_sessions(dry_run: bool, verbose: u8) -> Result<()> {
+pub fn run_all_sessions(dry_run: bool, aggressive: bool, verbose: u8) -> Result<()> {
     let root = projects_root()?;
     if !root.is_dir() {
         bail!(
@@ -80,15 +83,21 @@ pub fn run_all_sessions(dry_run: bool, verbose: u8) -> Result<()> {
                 continue;
             }
 
-            match run_with_options(path.to_string_lossy().as_ref(), dry_run, verbose.max(1)) {
+            match run_with_options(
+                path.to_string_lossy().as_ref(),
+                dry_run,
+                aggressive,
+                verbose.max(1),
+            ) {
                 Ok(()) => {
                     sessions_done += 1;
                     // We re-read the file just so the aggregate stats are correct;
                     // good enough for an analytics summary, and acceptable for
                     // batch runs (most sessions are <10 MB).
                     if let Ok(raw) = std::fs::read_to_string(&path) {
-                        let s =
-                            jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1;
+                        let mut cfg = config::compact_config();
+                        cfg.aggressive |= aggressive;
+                        let s = jsonl_rewriter::compact_session_str(&raw, &cfg).1;
                         total_in += s.bytes_in;
                         total_out += s.bytes_out;
                         total_dedup += s.read_results_deduped;
@@ -411,7 +420,7 @@ mod tests {
         drop(f);
 
         // Should not panic, should produce a sidecar.
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
         let sidecar = dir.path().join("session.jsonl.compressed");
         assert!(
             sidecar.exists(),
@@ -426,7 +435,7 @@ mod tests {
         let dir = TempDir::new()?;
         let session = dir.path().join("session.jsonl");
         fs::write(&session, "{}\n")?;
-        run_with_options(session.to_str().unwrap(), true, 0)?;
+        run_with_options(session.to_str().unwrap(), true, false, 0)?;
         let sidecar = dir.path().join("session.jsonl.compressed");
         assert!(
             !sidecar.exists(),
@@ -463,7 +472,7 @@ mod tests {
     fn apply_swaps_sidecar_into_place_and_creates_backup() -> Result<()> {
         let dir = TempDir::new()?;
         let session = make_repeatable_session(dir.path())?;
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
         let original_bytes = fs::read(&session)?;
 
         run_apply(session.to_str().unwrap(), 0)?;
@@ -496,7 +505,7 @@ mod tests {
     fn apply_refuses_when_backup_already_present() -> Result<()> {
         let dir = TempDir::new()?;
         let session = make_repeatable_session(dir.path())?;
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
         // Pre-create a backup to simulate a prior apply.
         fs::write(dir.path().join("session.jsonl.bak"), "old backup")?;
         let r = run_apply(session.to_str().unwrap(), 0);
@@ -511,7 +520,7 @@ mod tests {
         let session = make_repeatable_session(dir.path())?;
         let original_content = fs::read_to_string(&session)?;
 
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
         run_apply(session.to_str().unwrap(), 0)?;
         run_expand(session.to_str().unwrap(), 0)?;
 
@@ -571,7 +580,7 @@ mod tests {
         let dir = TempDir::new()?;
         let pat = format!("dapi{}", "0".repeat(34));
         let session = make_session_with_secret(dir.path(), &pat)?;
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
         run_apply(session.to_str().unwrap(), 0)?;
         let bak = fs::read_to_string(backup_path(&session))?;
         assert!(!bak.contains(&pat), "backup must be redacted");
@@ -587,7 +596,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new()?;
         let session = make_repeatable_session(dir.path())?;
-        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_with_options(session.to_str().unwrap(), false, false, 0)?;
 
         // Make the directory read-only so fs::write(&backup, ...) fails.
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555))?;

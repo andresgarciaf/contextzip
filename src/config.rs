@@ -140,6 +140,8 @@ pub struct CompactConfig {
     pub generic_cap_lines: usize,
     #[serde(default = "default_true")]
     pub include_paths_in_markers: bool,
+    #[serde(default)]
+    pub aggressive: bool,
 }
 
 fn default_true() -> bool {
@@ -163,6 +165,7 @@ impl Default for CompactConfig {
             generic_cap_chars: 4000,
             generic_cap_lines: 200,
             include_paths_in_markers: true,
+            aggressive: false,
         }
     }
 }
@@ -249,6 +252,14 @@ mod tests {
         assert_eq!(c.generic_cap_chars, 4000);
         assert_eq!(c.generic_cap_lines, 200);
         assert!(c.include_paths_in_markers);
+    }
+
+    #[test]
+    fn compact_config_aggressive_defaults_off() {
+        assert!(
+            !CompactConfig::default().aggressive,
+            "aggressive must default OFF"
+        );
     }
 
     #[test]
