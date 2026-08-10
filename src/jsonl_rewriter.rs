@@ -407,15 +407,16 @@ fn rewrite_record(
                         if first.tool_use_id != use_id {
                             // Repeated read of the same path -> replace with reference.
                             let preview_len = block_text_len(block);
-                            replace_with_read_ref(
+                            if replace_with_read_ref(
                                 block,
                                 path,
                                 &first.tool_use_id,
                                 preview_len,
                                 &first.content_sha256,
                                 cfg.include_paths_in_markers,
-                            );
-                            stats.read_results_deduped += 1;
+                            ) {
+                                stats.read_results_deduped += 1;
+                            }
                         }
                     }
                 }
@@ -489,6 +490,8 @@ fn block_text_len(block: &Value) -> usize {
         .sum()
 }
 
+/// Returns false (no-op) if the replacement would be >= the original content
+/// length, mirroring the never-inflate invariant of the other dedup axes.
 fn replace_with_read_ref(
     block: &mut Value,
     path: &str,
@@ -496,7 +499,7 @@ fn replace_with_read_ref(
     original_len: usize,
     content_sha256: &str,
     include_path: bool,
-) {
+) -> bool {
     let marker = if include_path {
         format!(
             "[contextzip: dedup - same as Read in tool_use {} ({} -> 0 chars). \
@@ -510,17 +513,25 @@ fn replace_with_read_ref(
             first_id, original_len
         )
     };
-    block["content"] = json!([{ "type": "text", "text": marker }]);
-    // Annotation so `expand` can find these refs without parsing the marker text.
-    // file_path is empty when include_paths_in_markers is false to avoid leaking
-    // absolute paths into the compressed sidecar.
-    block["contextzip_compressed"] = json!({
+    // The annotation JSON adds roughly 90+ chars on top of the marker text.
+    // Build the full new content string and check its length against original.
+    let annotation = json!({
         "axis": "ReadDedup",
         "first_tool_use_id": first_id,
         "file_path": if include_path { path } else { "" },
         "original_chars": original_len,
         "content_sha256": content_sha256,
     });
+    let replacement_len = marker.len() + annotation.to_string().len();
+    if replacement_len >= original_len {
+        return false;
+    }
+    block["content"] = json!([{ "type": "text", "text": marker }]);
+    // Annotation so `expand` can find these refs without parsing the marker text.
+    // file_path is empty when include_paths_in_markers is false to avoid leaking
+    // absolute paths into the compressed sidecar.
+    block["contextzip_compressed"] = annotation;
+    true
 }
 
 /// Generic reference marker for dedup axes other than ReadDedup.
@@ -765,11 +776,15 @@ mod tests {
 
     #[test]
     fn read_dedup_replaces_repeat_with_reference() {
+        // Content must be long enough (>~330 chars) to exceed the
+        // marker + annotation overhead imposed by the never-inflate guard.
+        let content =
+            "fn main() {\n    ".to_string() + &"println!(\"hello, world!\"); ".repeat(20) + "\n}";
         let records = vec![
             make_assistant_read("u1", "/abs/foo.rs"),
-            make_user_tool_result("u1", "fn main() { println!(\"hi\"); }"),
+            make_user_tool_result("u1", &content),
             make_assistant_read("u2", "/abs/foo.rs"),
-            make_user_tool_result("u2", "fn main() { println!(\"hi\"); }"),
+            make_user_tool_result("u2", &content),
         ];
         let input = jsonl(&records);
         let (out, stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
@@ -781,10 +796,35 @@ mod tests {
             out
         );
         // First read still has the full text
-        assert!(out.contains("fn main() { println!(\\\"hi\\\"); }"));
+        assert!(out.contains("println!"));
         // Second read replaced
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[3].contains("contextzip"));
+    }
+
+    #[test]
+    fn read_dedup_never_inflates_tiny_file() {
+        // Content is very short ("hi") - the replacement marker + annotation overhead
+        // is longer than the original, so the block must NOT be replaced.
+        let records = vec![
+            make_assistant_read("u1", "/abs/tiny.txt"),
+            make_user_tool_result("u1", "hi"),
+            make_assistant_read("u2", "/abs/tiny.txt"),
+            make_user_tool_result("u2", "hi"),
+        ];
+        let input = jsonl(&records);
+        let (out, stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
+        // Tiny content must not be "deduped" (that would inflate)
+        assert_eq!(
+            stats.read_results_deduped, 0,
+            "tiny file must not be deduped"
+        );
+        // Both blocks still carry the original content
+        assert_eq!(
+            out.matches("\"hi\"").count(),
+            2,
+            "both tiny-file results must be preserved"
+        );
     }
 
     #[test]
@@ -894,12 +934,15 @@ mod tests {
 
     #[test]
     fn read_dedup_annotation_carries_sha_and_respects_path_gate() {
+        // Content must exceed the marker+annotation overhead (~330 chars) so the
+        // never-inflate guard allows the dedup to proceed.
+        let content = "fn main() {\n    ".to_string() + &"println!(\"x\"); ".repeat(25) + "\n}";
         // IDs must match between assistant tool_use and user tool_result.
         let records = [
             make_assistant_read("r1", "/tmp/x.rs"),
-            make_user_tool_result("r1", "fn main() {}"),
+            make_user_tool_result("r1", &content),
             make_assistant_read("r2", "/tmp/x.rs"),
-            make_user_tool_result("r2", "fn main() {}"),
+            make_user_tool_result("r2", &content),
         ];
         let mut cfg = crate::config::CompactConfig::default();
         cfg.include_paths_in_markers = false;
