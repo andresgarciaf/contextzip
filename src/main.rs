@@ -53,6 +53,7 @@ mod prisma_cmd;
 mod psql_cmd;
 mod pytest_cmd;
 mod read;
+mod redact;
 mod rewrite_cmd;
 mod ruff_cmd;
 mod runner;

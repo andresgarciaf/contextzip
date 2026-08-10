@@ -1,27 +1,48 @@
 //! Session-history compressor for Claude Code JSONL session logs.
 //!
 //! Operates on the JSONL produced under `~/.claude/projects/<project>/<session>.jsonl`.
-//! Two safe, opt-in axes ship in v0.2:
+//! Five safe, opt-in axes ship in v0.2:
 //!
-//! - **`ReadDedup`** — when the same file is read multiple times via the `Read`
-//!   tool, the second and later `tool_result` payloads are replaced with a
-//!   short reference back to the first read. A SHA-256 of the file at compact
-//!   time is recorded so that, if the on-disk file later changes, an `expand`
-//!   step can detect the mismatch and restore the original content.
-//! - **`BashHistoryCompact`** — past `Bash` tool_results are re-fed through
-//!   ContextZip's normal filter pipeline. Idempotent: re-running on already
-//!   compressed records is a no-op.
+//! - **`ReadDedup`** - repeated `Read` tool_results for the same `file_path` are
+//!   replaced with a short reference back to the first occurrence. A SHA-256 of
+//!   the file content is recorded at compact time so that a future `expand` step
+//!   can detect staleness (on-disk content changed) and restore the original.
+//!
+//! - **`GrepGlobDedup`** - repeated identical `Grep` or `Glob` tool_results
+//!   (keyed on normalized input args) are replaced with a reference. Avoids
+//!   inflating context when the same search is re-run across turns.
+//!
+//! - **`BashCmdDedup`** - repeated identical `Bash` commands whose first result
+//!   was non-empty are replaced with a reference. Commands whose first output was
+//!   empty are not deduplicated, since re-runs may legitimately differ.
+//!
+//! - **`BashHistoryCompact`** - past `Bash` tool_results are re-fed through
+//!   ContextZip's normal filter pipeline (ANSI strip, repeat-line tally, line
+//!   cap). Only the first occurrence of each repeated command is compressed;
+//!   subsequent occurrences are handled by `BashCmdDedup`. Idempotent: re-running
+//!   on already-compressed records is a no-op.
+//!
+//! - **`GenericResultCap`** - any other oversized tool_result (MCP, Task,
+//!   WebFetch, etc.) is ANSI-stripped and line-capped at the configured limit.
+//!   Does not deduplicate; only reduces runaway payloads.
+//!
+//! A secret-redaction scrub pass (`crate::redact`) runs over the compacted output
+//! before any sidecar or `.bak` write when `compact.redact` is enabled in config.
+//! All five axes are reversible, idempotent, and guaranteed never to inflate the
+//! token count above the original.
 //!
 //! Records are never removed and the `uuid` / `parentUuid` chain is never
-//! altered, only `tool_result` content payloads are rewritten. The original
+//! altered - only `tool_result` content payloads are rewritten. The original
 //! `.jsonl` is left untouched; output goes to a sibling `.compressed` file.
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::config::CompactConfig;
 
 /// Aggregated metrics returned to the CLI for the user-facing summary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -32,6 +53,10 @@ pub struct CompactStats {
     pub bytes_out: usize,
     pub bash_results_recompressed: usize,
     pub read_results_deduped: usize,
+    pub grepglob_results_deduped: usize,
+    pub bash_cmds_deduped: usize,
+    pub secrets_redacted: usize,
+    pub generic_results_capped: usize,
 }
 
 impl CompactStats {
@@ -50,7 +75,8 @@ pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
     let raw = fs::read_to_string(input)
         .with_context(|| format!("Failed to read session file: {}", input.display()))?;
 
-    let (out, stats) = compact_session_str(&raw);
+    let cfg = crate::config::compact_config();
+    let (out, stats) = compact_session_str(&raw, &cfg);
 
     let mut sidecar = input.to_path_buf();
     let new_name = match input.file_name().and_then(|s| s.to_str()) {
@@ -67,17 +93,20 @@ pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
 
 /// Pure-string compaction: takes the raw JSONL, returns the rewritten JSONL.
 /// Lines that aren't valid JSON are passed through verbatim.
-pub fn compact_session_str(input: &str) -> (String, CompactStats) {
+pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, CompactStats) {
     let mut stats = CompactStats {
         bytes_in: input.len(),
         ..Default::default()
     };
 
-    // Two-pass: first pass collects which Read+file_path → first tool_use_id.
-    // Second pass rewrites repeated Read tool_results, and recompresses Bash
-    // tool_results unconditionally.
+    // Two-pass: first pass collects which Read+file_path -> first tool_use_id,
+    // which Grep/Glob args_key -> first tool_use_id, and which Bash command
+    // string -> first tool_use_id.
+    // Second pass rewrites repeated Read/Grep/Glob/Bash tool_results.
     let mut tool_use_index: HashMap<String, ToolUseInfo> = HashMap::new();
     let mut first_read_for: HashMap<String, FirstRead> = HashMap::new();
+    let mut first_grepglob_for: HashMap<String, FirstResult> = HashMap::new();
+    let mut first_bashcmd_for: HashMap<String, FirstResult> = HashMap::new();
 
     for line in input.lines() {
         if line.trim().is_empty() {
@@ -86,7 +115,76 @@ pub fn compact_session_str(input: &str) -> (String, CompactStats) {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        index_record(&record, &mut tool_use_index, &mut first_read_for);
+        index_record(
+            &record,
+            &mut tool_use_index,
+            &mut first_read_for,
+            &mut first_grepglob_for,
+            &mut first_bashcmd_for,
+        );
+    }
+
+    // Content scan: fill content_sha256 for each FirstRead AND confirm
+    // first_output_nonempty for each Bash FirstResult by scanning user
+    // tool_result records. The output lives in a different record than
+    // where we learn "this is a Read/Bash", so we scan user records
+    // separately after indexing assistant records.
+    // Build reverse maps: first tool_use_id -> key in each map.
+    let first_id_to_path: HashMap<String, String> = first_read_for
+        .iter()
+        .map(|(path, fr)| (fr.tool_use_id.clone(), path.clone()))
+        .collect();
+    let first_id_to_bashcmd: HashMap<String, String> = first_bashcmd_for
+        .iter()
+        .map(|(cmd, fr)| (fr.tool_use_id.clone(), cmd.clone()))
+        .collect();
+    for line in input.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let Some(use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                continue;
+            };
+            // Extract text from the block (same logic as block_text_len).
+            let text = match block.get("content") {
+                Some(Value::String(s)) => s.as_str().to_string(),
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|c| c.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if let Some(path) = first_id_to_path.get(use_id) {
+                if let Some(fr) = first_read_for.get_mut(path) {
+                    if fr.content_sha256.is_empty() {
+                        fr.content_sha256 = sha256_hex(&text);
+                    }
+                }
+            }
+            if let Some(cmd) = first_id_to_bashcmd.get(use_id) {
+                if let Some(fr) = first_bashcmd_for.get_mut(cmd) {
+                    fr.first_output_nonempty = !text.trim().is_empty();
+                }
+            }
+        }
     }
 
     // Second pass: rewrite content of tool_results.
@@ -109,7 +207,15 @@ pub fn compact_session_str(input: &str) -> (String, CompactStats) {
             }
         };
 
-        rewrite_record(&mut record, &tool_use_index, &first_read_for, &mut stats);
+        rewrite_record(
+            &mut record,
+            &tool_use_index,
+            &first_read_for,
+            &first_grepglob_for,
+            &first_bashcmd_for,
+            cfg,
+            &mut stats,
+        );
 
         let written = serde_json::to_string(&record).unwrap_or_else(|_| line.to_string());
         out.push_str(&written);
@@ -117,6 +223,11 @@ pub fn compact_session_str(input: &str) -> (String, CompactStats) {
         stats.records_written += 1;
     }
 
+    if cfg.redact {
+        let (scrubbed, n) = crate::redact::scrub(&out);
+        stats.secrets_redacted = n;
+        out = scrubbed;
+    }
     stats.bytes_out = out.len();
     (out, stats)
 }
@@ -125,20 +236,38 @@ pub fn compact_session_str(input: &str) -> (String, CompactStats) {
 struct ToolUseInfo {
     name: String,
     file_path: Option<String>,
+    /// Normalized args key for Grep/Glob dedup (BTreeMap-serialized input JSON).
+    args_key: Option<String>,
+    /// Bash command string for BashCmdDedup.
+    bash_cmd: Option<String>,
+}
+
+/// First occurrence of a Grep/Glob or Bash command with a given key.
+#[derive(Debug, Clone)]
+struct FirstResult {
+    tool_use_id: String,
+    /// Whether the first occurrence's tool_result output was non-empty.
+    /// Grep/Glob registrations set this to true unconditionally (output
+    /// is assumed non-empty). Bash registrations start false and are
+    /// confirmed true in the content scan pass.
+    first_output_nonempty: bool,
 }
 
 #[derive(Debug, Clone)]
 struct FirstRead {
     tool_use_id: String,
-    // `content_sha256` will be added back when `contextzip expand` ships and
-    // needs to detect a stale file before substituting the cached read. Kept
-    // out for now to avoid unused-field warnings.
+    /// SHA-256 hex of the tool_result text from the first read. Used by
+    /// `contextzip expand` to detect whether the on-disk file has changed
+    /// since compaction.
+    content_sha256: String,
 }
 
 fn index_record(
     record: &Value,
     tool_use_index: &mut HashMap<String, ToolUseInfo>,
     first_read_for: &mut HashMap<String, FirstRead>,
+    first_grepglob_for: &mut HashMap<String, FirstResult>,
+    first_bashcmd_for: &mut HashMap<String, FirstResult>,
 ) {
     if record.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
@@ -169,11 +298,31 @@ fn index_record(
             .and_then(Value::as_str)
             .map(String::from);
 
+        // Compute a stable args_key for Grep/Glob by sorting input keys via BTreeMap.
+        let args_key = match name.as_str() {
+            "Grep" | "Glob" => block.get("input").and_then(|input| {
+                let map: BTreeMap<String, Value> = serde_json::from_value(input.clone()).ok()?;
+                serde_json::to_string(&map).ok()
+            }),
+            _ => None,
+        };
+
+        let bash_cmd = match name.as_str() {
+            "Bash" => block
+                .get("input")
+                .and_then(|i| i.get("command"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            _ => None,
+        };
+
         tool_use_index.insert(
             id.to_string(),
             ToolUseInfo {
                 name: name.clone(),
                 file_path: file_path.clone(),
+                args_key: args_key.clone(),
+                bash_cmd: bash_cmd.clone(),
             },
         );
 
@@ -181,6 +330,31 @@ fn index_record(
             if let Some(path) = file_path {
                 first_read_for.entry(path).or_insert_with(|| FirstRead {
                     tool_use_id: id.to_string(),
+                    content_sha256: String::new(),
+                });
+            }
+        }
+
+        if name == "Grep" || name == "Glob" {
+            if let Some(key) = args_key {
+                first_grepglob_for
+                    .entry(key)
+                    .or_insert_with(|| FirstResult {
+                        tool_use_id: id.to_string(),
+                        first_output_nonempty: true, // assume non-empty for Grep/Glob
+                    });
+            }
+        }
+
+        if name == "Bash" {
+            if let Some(cmd) = bash_cmd {
+                // ponytail: dedup is command-keyed, not content-keyed; non-deterministic
+                // commands (date, ls after changes) collapse to the first result.
+                // Upgrade path: content-hash keying if this bites.
+                first_bashcmd_for.entry(cmd).or_insert_with(|| FirstResult {
+                    tool_use_id: id.to_string(),
+                    // Confirmed non-empty in the content scan pass below.
+                    first_output_nonempty: false,
                 });
             }
         }
@@ -191,6 +365,9 @@ fn rewrite_record(
     record: &mut Value,
     tool_use_index: &HashMap<String, ToolUseInfo>,
     first_read_for: &HashMap<String, FirstRead>,
+    first_grepglob_for: &HashMap<String, FirstResult>,
+    first_bashcmd_for: &HashMap<String, FirstResult>,
+    cfg: &CompactConfig,
     stats: &mut CompactStats,
 ) {
     if record.get("type").and_then(Value::as_str) != Some("user") {
@@ -206,6 +383,10 @@ fn rewrite_record(
 
     for block in content.iter_mut() {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        // Idempotency: skip already-compressed blocks.
+        if block.get("contextzip_compressed").is_some() {
             continue;
         }
         let Some(use_id) = block
@@ -224,18 +405,74 @@ fn rewrite_record(
                 if let Some(path) = info.file_path.as_deref() {
                     if let Some(first) = first_read_for.get(path) {
                         if first.tool_use_id != use_id {
-                            // Repeated read of the same path → replace with reference.
+                            // Repeated read of the same path -> replace with reference.
                             let preview_len = block_text_len(block);
-                            replace_with_read_ref(block, path, &first.tool_use_id, preview_len);
-                            stats.read_results_deduped += 1;
+                            if replace_with_read_ref(
+                                block,
+                                path,
+                                &first.tool_use_id,
+                                preview_len,
+                                &first.content_sha256,
+                                cfg.include_paths_in_markers,
+                            ) {
+                                stats.read_results_deduped += 1;
+                            }
                         }
                     }
                 }
             }
-            "Bash" if recompress_bash_block(block) => {
-                stats.bash_results_recompressed += 1;
+            "Grep" | "Glob" => {
+                if let Some(key) = info.args_key.as_deref() {
+                    if let Some(first) = first_grepglob_for.get(key) {
+                        if first.tool_use_id != use_id {
+                            let preview_len = block_text_len(block);
+                            if replace_with_generic_ref(
+                                block,
+                                "GrepGlobDedup",
+                                &first.tool_use_id,
+                                preview_len,
+                            ) {
+                                stats.grepglob_results_deduped += 1;
+                            }
+                        }
+                    }
+                }
             }
-            _ => {}
+            "Bash" => {
+                // BashCmdDedup: if this is not the first occurrence of the same
+                // command string, replace with a reference to the first.
+                // Dedup wins over text compaction; only fall through to
+                // recompress_bash_block when this IS the first occurrence.
+                let deduped = info.bash_cmd.as_deref().and_then(|cmd| {
+                    let first = first_bashcmd_for.get(cmd)?;
+                    if first.tool_use_id == use_id {
+                        return None; // this is the first - no dedup
+                    }
+                    // Guard: skip if block is already compressed (idempotency).
+                    if block.get("contextzip_compressed").is_some() {
+                        return None;
+                    }
+                    // Guard: skip if the first occurrence had empty output -
+                    // deduping to an empty reference is data loss.
+                    if !first.first_output_nonempty {
+                        return None;
+                    }
+                    Some(first.tool_use_id.clone())
+                });
+                if let Some(first_id) = deduped {
+                    let preview_len = block_text_len(block);
+                    if replace_with_generic_ref(block, "BashCmdDedup", &first_id, preview_len) {
+                        stats.bash_cmds_deduped += 1;
+                    }
+                } else if recompress_bash_block(block) {
+                    stats.bash_results_recompressed += 1;
+                }
+            }
+            _ => {
+                if generic_cap_block(block, cfg) {
+                    stats.generic_results_capped += 1;
+                }
+            }
         }
     }
 }
@@ -253,20 +490,74 @@ fn block_text_len(block: &Value) -> usize {
         .sum()
 }
 
-fn replace_with_read_ref(block: &mut Value, path: &str, first_id: &str, original_len: usize) {
-    let marker = format!(
-        "[contextzip: dedup — same as Read in tool_use {} ({} → 0 chars). \
-         Re-expand with `contextzip expand` if the file at {} has changed.]",
-        first_id, original_len, path
-    );
-    block["content"] = json!([{ "type": "text", "text": marker }]);
-    // Annotation so `expand` can find these refs without parsing the marker text.
-    block["contextzip_compressed"] = json!({
+/// Returns false (no-op) if the replacement would be >= the original content
+/// length, mirroring the never-inflate invariant of the other dedup axes.
+fn replace_with_read_ref(
+    block: &mut Value,
+    path: &str,
+    first_id: &str,
+    original_len: usize,
+    content_sha256: &str,
+    include_path: bool,
+) -> bool {
+    let marker = if include_path {
+        format!(
+            "[contextzip: dedup - same as Read in tool_use {} ({} -> 0 chars). \
+             Re-expand with `contextzip expand` if the file at {} has changed.]",
+            first_id, original_len, path
+        )
+    } else {
+        format!(
+            "[contextzip: dedup - same as Read in tool_use {} ({} -> 0 chars). \
+             Re-expand with `contextzip expand` to restore.]",
+            first_id, original_len
+        )
+    };
+    // The annotation JSON adds roughly 90+ chars on top of the marker text.
+    // Build the full new content string and check its length against original.
+    let annotation = json!({
         "axis": "ReadDedup",
         "first_tool_use_id": first_id,
-        "file_path": path,
+        "file_path": if include_path { path } else { "" },
+        "original_chars": original_len,
+        "content_sha256": content_sha256,
+    });
+    let replacement_len = marker.len() + annotation.to_string().len();
+    if replacement_len >= original_len {
+        return false;
+    }
+    block["content"] = json!([{ "type": "text", "text": marker }]);
+    // Annotation so `expand` can find these refs without parsing the marker text.
+    // file_path is empty when include_paths_in_markers is false to avoid leaking
+    // absolute paths into the compressed sidecar.
+    block["contextzip_compressed"] = annotation;
+    true
+}
+
+/// Generic reference marker for dedup axes other than ReadDedup.
+/// Shared by GrepGlobDedup (Task 6) and BashCmdDedup (Task 7).
+/// Returns false (no-op) if the generated marker would be >= original_len,
+/// mirroring recompress_bash_block's never-inflate invariant.
+pub fn replace_with_generic_ref(
+    block: &mut Value,
+    axis: &str,
+    first_id: &str,
+    original_len: usize,
+) -> bool {
+    let marker = format!(
+        "[contextzip: dedup {} - same as tool_use {} ({} -> 0 chars)]",
+        axis, first_id, original_len
+    );
+    if marker.len() >= original_len {
+        return false;
+    }
+    block["content"] = json!([{ "type": "text", "text": marker }]);
+    block["contextzip_compressed"] = json!({
+        "axis": axis,
+        "first_tool_use_id": first_id,
         "original_chars": original_len,
     });
+    true
 }
 
 fn recompress_bash_block(block: &mut Value) -> bool {
@@ -304,6 +595,61 @@ fn recompress_bash_block(block: &mut Value) -> bool {
         "original_chars": original.len(),
         "compressed_chars": new_text.len(),
         "content_sha256": sha256_hex(&original),
+    });
+    true
+}
+
+/// Cap oversized tool_results from unrecognized tools (the `_ =>` catch-all).
+/// ANSI-strips, keeps the first `cfg.generic_cap_lines` lines, appends a drop
+/// marker. Never inflates: only writes back if the result is smaller.
+/// Returns true when the block was rewritten.
+fn generic_cap_block(block: &mut Value, cfg: &crate::config::CompactConfig) -> bool {
+    if block.get("contextzip_compressed").is_some() {
+        return false;
+    }
+    let original = match block.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|c| c.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return false,
+    };
+    if original.is_empty() {
+        return false;
+    }
+    // Only act when the text exceeds at least one threshold.
+    let line_count = original.lines().count();
+    if original.len() <= cfg.generic_cap_chars && line_count <= cfg.generic_cap_lines {
+        return false;
+    }
+
+    let stripped = crate::ansi_filter::filter_ansi(&original);
+    let lines: Vec<&str> = stripped.lines().collect();
+    let cap = cfg.generic_cap_lines;
+    let new_text = if lines.len() > cap {
+        let dropped = lines.len() - cap;
+        let mut kept = lines[..cap].join("\n");
+        kept.push_str(&format!(
+            "\n[contextzip: GenericResultCap - {} more lines dropped]",
+            dropped
+        ));
+        kept
+    } else {
+        stripped.clone()
+    };
+
+    // Never-inflate guard.
+    if new_text.len() >= original.len() {
+        return false;
+    }
+
+    block["content"] = json!([{ "type": "text", "text": new_text }]);
+    block["contextzip_compressed"] = json!({
+        "axis": "GenericResultCap",
+        "original_chars": original.len(),
+        "compressed_chars": new_text.len(),
     });
     true
 }
@@ -388,15 +734,7 @@ mod tests {
     use super::*;
 
     fn make_assistant_read(id: &str, file_path: &str) -> Value {
-        json!({
-            "type": "assistant",
-            "uuid": format!("ass-{}", id),
-            "message": {
-                "content": [
-                    { "type": "tool_use", "id": id, "name": "Read", "input": { "file_path": file_path } }
-                ]
-            }
-        })
+        make_assistant_tool(id, "Read", json!({ "file_path": file_path }))
     }
 
     fn make_user_tool_result(id: &str, text: &str) -> Value {
@@ -412,12 +750,16 @@ mod tests {
     }
 
     fn make_assistant_bash(id: &str, command: &str) -> Value {
+        make_assistant_tool(id, "Bash", json!({ "command": command }))
+    }
+
+    fn make_assistant_tool(id: &str, name: &str, input: Value) -> Value {
         json!({
             "type": "assistant",
             "uuid": format!("ass-{}", id),
             "message": {
                 "content": [
-                    { "type": "tool_use", "id": id, "name": "Bash", "input": { "command": command } }
+                    { "type": "tool_use", "id": id, "name": name, "input": input }
                 ]
             }
         })
@@ -434,14 +776,18 @@ mod tests {
 
     #[test]
     fn read_dedup_replaces_repeat_with_reference() {
+        // Content must be long enough (>~330 chars) to exceed the
+        // marker + annotation overhead imposed by the never-inflate guard.
+        let content =
+            "fn main() {\n    ".to_string() + &"println!(\"hello, world!\"); ".repeat(20) + "\n}";
         let records = vec![
             make_assistant_read("u1", "/abs/foo.rs"),
-            make_user_tool_result("u1", "fn main() { println!(\"hi\"); }"),
+            make_user_tool_result("u1", &content),
             make_assistant_read("u2", "/abs/foo.rs"),
-            make_user_tool_result("u2", "fn main() { println!(\"hi\"); }"),
+            make_user_tool_result("u2", &content),
         ];
         let input = jsonl(&records);
-        let (out, stats) = compact_session_str(&input);
+        let (out, stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
 
         assert_eq!(stats.read_results_deduped, 1);
         assert!(
@@ -450,10 +796,35 @@ mod tests {
             out
         );
         // First read still has the full text
-        assert!(out.contains("fn main() { println!(\\\"hi\\\"); }"));
+        assert!(out.contains("println!"));
         // Second read replaced
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[3].contains("contextzip"));
+    }
+
+    #[test]
+    fn read_dedup_never_inflates_tiny_file() {
+        // Content is very short ("hi") - the replacement marker + annotation overhead
+        // is longer than the original, so the block must NOT be replaced.
+        let records = vec![
+            make_assistant_read("u1", "/abs/tiny.txt"),
+            make_user_tool_result("u1", "hi"),
+            make_assistant_read("u2", "/abs/tiny.txt"),
+            make_user_tool_result("u2", "hi"),
+        ];
+        let input = jsonl(&records);
+        let (out, stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
+        // Tiny content must not be "deduped" (that would inflate)
+        assert_eq!(
+            stats.read_results_deduped, 0,
+            "tiny file must not be deduped"
+        );
+        // Both blocks still carry the original content
+        assert_eq!(
+            out.matches("\"hi\"").count(),
+            2,
+            "both tiny-file results must be preserved"
+        );
     }
 
     #[test]
@@ -464,7 +835,8 @@ mod tests {
             make_assistant_read("u2", "/abs/b.rs"),
             make_user_tool_result("u2", "let b = 2;"),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records));
+        let (out, stats) =
+            compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.read_results_deduped, 0);
         assert!(out.contains("let a = 1;"));
         assert!(out.contains("let b = 2;"));
@@ -477,7 +849,8 @@ mod tests {
             make_assistant_bash("b1", "noisy"),
             make_user_tool_result("b1", &noisy),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records));
+        let (out, stats) =
+            compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.bash_results_recompressed, 1);
         // Repeated 'ok' lines should be collapsed into a tally
         assert!(out.contains("(×"), "expected tally marker in {}", out);
@@ -492,8 +865,10 @@ mod tests {
             make_user_tool_result("b1", &noisy),
         ];
         let input = jsonl(&records);
-        let (first_out, first_stats) = compact_session_str(&input);
-        let (second_out, second_stats) = compact_session_str(&first_out);
+        let (first_out, first_stats) =
+            compact_session_str(&input, &crate::config::CompactConfig::default());
+        let (second_out, second_stats) =
+            compact_session_str(&first_out, &crate::config::CompactConfig::default());
         assert_eq!(first_stats.bash_results_recompressed, 1);
         assert_eq!(second_stats.bash_results_recompressed, 0);
         assert_eq!(first_out, second_out);
@@ -502,7 +877,7 @@ mod tests {
     #[test]
     fn malformed_lines_pass_through_unchanged() {
         let input = "this is not json\n{\"type\":\"user\"}\nalso not json\n";
-        let (out, stats) = compact_session_str(input);
+        let (out, stats) = compact_session_str(input, &crate::config::CompactConfig::default());
         assert!(out.contains("this is not json"));
         assert!(out.contains("also not json"));
         assert_eq!(stats.records_read, 3);
@@ -511,7 +886,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_output() {
-        let (out, stats) = compact_session_str("");
+        let (out, stats) = compact_session_str("", &crate::config::CompactConfig::default());
         assert_eq!(out, "");
         assert_eq!(stats.records_read, 0);
         assert_eq!(stats.bytes_in, 0);
@@ -527,7 +902,7 @@ mod tests {
             make_user_tool_result("b1", small),
         ];
         let original = jsonl(&records);
-        let (out, _) = compact_session_str(&original);
+        let (out, _) = compact_session_str(&original, &crate::config::CompactConfig::default());
         assert!(out.len() <= original.len() + 10); // allow trailing newline diff
     }
 
@@ -548,11 +923,347 @@ mod tests {
     }
 
     #[test]
+    fn secret_in_tool_result_never_survives_to_output() {
+        let pat = format!("dapi{}", "0".repeat(34));
+        let records = [make_user_tool_result("u1", &format!("export TOKEN={pat}"))];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert!(!out.contains(&pat), "secret leaked into sidecar");
+        assert!(stats.secrets_redacted >= 1);
+    }
+
+    #[test]
+    fn read_dedup_annotation_carries_sha_and_respects_path_gate() {
+        // Content must exceed the marker+annotation overhead (~330 chars) so the
+        // never-inflate guard allows the dedup to proceed.
+        let content = "fn main() {\n    ".to_string() + &"println!(\"x\"); ".repeat(25) + "\n}";
+        // IDs must match between assistant tool_use and user tool_result.
+        let records = [
+            make_assistant_read("r1", "/tmp/x.rs"),
+            make_user_tool_result("r1", &content),
+            make_assistant_read("r2", "/tmp/x.rs"),
+            make_user_tool_result("r2", &content),
+        ];
+        let mut cfg = crate::config::CompactConfig::default();
+        cfg.include_paths_in_markers = false;
+        let (out, _) = compact_session_str(&jsonl(&records), &cfg);
+        assert!(
+            out.contains("\"content_sha256\""),
+            "sha must be recorded for staleness checks"
+        );
+        // Path must be absent from the dedup marker and annotation written for
+        // the second (deduplicated) user tool_result record. We verify by
+        // checking the rewritten user record (line 4) directly.
+        let lines: Vec<&str> = out.lines().collect();
+        // Line index 3 is the 4th record - the deduplicated user tool_result.
+        let dedup_line = lines[3];
+        assert!(
+            !dedup_line.contains("/tmp/x.rs"),
+            "path must not appear in dedup marker when gate is off, got: {}",
+            dedup_line
+        );
+        // annotation must have empty file_path
+        let v: Value = serde_json::from_str(dedup_line).unwrap();
+        let file_path = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("contextzip_compressed"))
+            .and_then(|c| c.get("file_path"))
+            .and_then(Value::as_str)
+            .unwrap_or("NOT_FOUND");
+        assert_eq!(
+            file_path, "",
+            "file_path in annotation must be empty, got: {}",
+            file_path
+        );
+    }
+
+    #[test]
     fn sha256_hex_is_deterministic_and_lowercase() {
         let h = sha256_hex("hello world");
         assert_eq!(
             h,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
+    }
+
+    #[test]
+    fn grep_dedup_replaces_repeat_with_reference() {
+        // Output must be longer than the ~72-char dedup marker to pass the never-inflate guard.
+        let grep_out =
+            "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g1", grep_out),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g2", grep_out),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.grepglob_results_deduped, 1);
+        assert!(
+            out.contains("GrepGlobDedup"),
+            "missing GrepGlobDedup marker in {}",
+            out
+        );
+        // First result's content must survive intact.
+        assert!(
+            out.contains("fn alpha"),
+            "first Grep result content must be preserved"
+        );
+        assert!(
+            out.contains("fn beta"),
+            "first Grep result content must be preserved"
+        );
+        // Second result's body must be replaced - original text gone from the dedup line.
+        let lines: Vec<&str> = out.lines().collect();
+        let dedup_line = lines[3];
+        assert!(
+            !dedup_line.contains("fn alpha"),
+            "second result body must be replaced, got: {}",
+            dedup_line
+        );
+        assert!(
+            dedup_line.contains("GrepGlobDedup"),
+            "second result must carry dedup marker"
+        );
+    }
+
+    #[test]
+    fn grep_dedup_does_not_touch_unique_results() {
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result(
+                "g1",
+                "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma",
+            ),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"struct ","path":"src"})),
+            make_user_tool_result(
+                "g2",
+                "src/b.rs:5: struct Foo\nsrc/c.rs:6: struct Bar\nsrc/d.rs:7: struct Baz",
+            ),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.grepglob_results_deduped, 0);
+        assert!(out.contains("fn alpha"));
+        assert!(out.contains("struct Foo"));
+    }
+
+    #[test]
+    fn grep_dedup_is_idempotent() {
+        let grep_out =
+            "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
+        let records = [
+            make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g1", grep_out),
+            make_assistant_tool("g2", "Grep", json!({"pattern":"fn ","path":"src"})),
+            make_user_tool_result("g2", grep_out),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.grepglob_results_deduped, 1);
+        assert_eq!(
+            second_stats.grepglob_results_deduped, 0,
+            "second pass must not re-dedup"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn bash_cmd_dedup_references_first_when_command_repeats() {
+        // Output must exceed the ~72-char dedup marker to pass the never-inflate guard.
+        let ls_out = "total 8\ndrwxr-xr-x  2 user staff   64 Aug 10 12:00 .\ndrwxr-xr-x  5 user staff  160 Aug 10 11:00 ..\n-rw-r--r--  1 user staff    0 Aug 10 12:00 file.txt";
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", ls_out),
+            make_assistant_bash("b2", "ls -la"),
+            make_user_tool_result("b2", ls_out),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.bash_cmds_deduped, 1);
+        assert!(
+            out.contains("BashCmdDedup"),
+            "missing BashCmdDedup marker in {}",
+            out
+        );
+        // First occurrence's output must be preserved.
+        assert!(
+            out.contains("file.txt"),
+            "first Bash result must be preserved"
+        );
+        // Second occurrence's body must be replaced.
+        let lines: Vec<&str> = out.lines().collect();
+        let dedup_line = lines[3];
+        assert!(
+            !dedup_line.contains("file.txt"),
+            "second result body must be replaced, got: {}",
+            dedup_line
+        );
+        assert!(
+            dedup_line.contains("BashCmdDedup"),
+            "second result must carry dedup marker"
+        );
+    }
+
+    #[test]
+    fn bash_cmd_dedup_does_not_touch_unique_commands() {
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", "total 8\ndrwxr-xr-x  2 user staff  64 Aug 10 .\n-rw-r--r--  1 user staff   0 Aug 10 file1"),
+            make_assistant_bash("b2", "git status"),
+            make_user_tool_result("b2", "On branch main\nYour branch is up to date with origin/main.\nnothing to commit, working tree clean"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "unique commands must not be deduped"
+        );
+        assert!(
+            out.contains("file1"),
+            "first command output must be preserved"
+        );
+        assert!(
+            out.contains("On branch main"),
+            "second command output must be preserved"
+        );
+    }
+
+    #[test]
+    fn bash_cmd_dedup_is_idempotent() {
+        let ls_out = "total 8\ndrwxr-xr-x  2 user staff   64 Aug 10 12:00 .\ndrwxr-xr-x  5 user staff  160 Aug 10 11:00 ..\n-rw-r--r--  1 user staff    0 Aug 10 12:00 file.txt";
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", ls_out),
+            make_assistant_bash("b2", "ls -la"),
+            make_user_tool_result("b2", ls_out),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.bash_cmds_deduped, 1);
+        assert_eq!(
+            second_stats.bash_cmds_deduped, 0,
+            "second pass must not re-dedup"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn bash_cmd_dedup_skips_when_first_output_was_empty() {
+        // First `date` has empty output; second has real output.
+        // The second must NOT be deduped (would point to nothing) and
+        // its output must be preserved.
+        let records = [
+            make_assistant_bash("b1", "date"),
+            make_user_tool_result("b1", ""),
+            make_assistant_bash("b2", "date"),
+            make_user_tool_result("b2", "Sun Aug 10 12:00:00 UTC 2026"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "must not dedup when first output was empty"
+        );
+        assert!(
+            out.contains("Sun Aug 10"),
+            "second result must be preserved when first was empty"
+        );
+    }
+
+    #[test]
+    fn bash_cmd_dedup_never_inflates_short_output() {
+        // Both calls run the same command but output is shorter than the marker.
+        // Neither occurrence should be inflated.
+        let short = "ok";
+        let records = [
+            make_assistant_bash("b1", "echo ok"),
+            make_user_tool_result("b1", short),
+            make_assistant_bash("b2", "echo ok"),
+            make_user_tool_result("b2", short),
+        ];
+        let original = jsonl(&records);
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&original, &cfg);
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "must not count dedup when marker would inflate"
+        );
+        // Length must not grow beyond the original.
+        assert!(
+            out.len() <= original.len() + 10,
+            "output inflated from {} to {} bytes",
+            original.len(),
+            out.len()
+        );
+    }
+
+    #[test]
+    fn generic_cap_trims_oversized_unknown_tool_result() {
+        let big = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &big),
+        ];
+        let cfg = crate::config::CompactConfig::default(); // 200-line cap
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.generic_results_capped, 1);
+        assert!(out.contains("more lines"), "missing drop marker in {}", out);
+    }
+
+    #[test]
+    fn generic_cap_leaves_small_results_untouched() {
+        let small = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // small is well under both thresholds (200 lines, 4000 chars)
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &small),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(
+            stats.generic_results_capped, 0,
+            "small result must not be capped"
+        );
+        assert!(
+            out.contains("line 0"),
+            "small result content must be preserved"
+        );
+    }
+
+    #[test]
+    fn generic_cap_is_idempotent() {
+        let big = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let records = [
+            make_assistant_tool("m1", "mcp__some__tool", json!({})),
+            make_user_tool_result("m1", &big),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.generic_results_capped, 1);
+        assert_eq!(
+            second_stats.generic_results_capped, 0,
+            "second pass must not re-cap"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 }

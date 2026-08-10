@@ -921,30 +921,28 @@ fn run_commit(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
             &raw_output,
             &compact,
         );
+    } else if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+        println!("ok (nothing to commit)");
+        timer.track(
+            &original_cmd,
+            "contextzip git commit",
+            &raw_output,
+            "ok (nothing to commit)",
+        );
     } else {
-        if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
-            println!("ok (nothing to commit)");
-            timer.track(
-                &original_cmd,
-                "contextzip git commit",
-                &raw_output,
-                "ok (nothing to commit)",
-            );
-        } else {
-            if !stderr.trim().is_empty() {
-                eprint!("{}", stderr);
-            }
-            if !stdout.trim().is_empty() {
-                eprint!("{}", stdout);
-            }
-            timer.track(
-                &original_cmd,
-                "contextzip git commit",
-                &raw_output,
-                &raw_output,
-            );
-            std::process::exit(output.status.code().unwrap_or(1));
+        if !stderr.trim().is_empty() {
+            eprint!("{}", stderr);
         }
+        if !stdout.trim().is_empty() {
+            eprint!("{}", stdout);
+        }
+        timer.track(
+            &original_cmd,
+            "contextzip git commit",
+            &raw_output,
+            &raw_output,
+        );
+        std::process::exit(output.status.code().unwrap_or(1));
     }
 
     Ok(())

@@ -18,6 +18,8 @@ pub struct Config {
     pub hooks: HooksConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub compact: CompactConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -126,6 +128,50 @@ impl Default for LimitsConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactConfig {
+    #[serde(default = "default_true")]
+    pub redact: bool,
+    #[serde(default = "default_retention")]
+    pub backup_retention_days: u32,
+    #[serde(default = "default_cap_chars")]
+    pub generic_cap_chars: usize,
+    #[serde(default = "default_cap_lines")]
+    pub generic_cap_lines: usize,
+    #[serde(default = "default_true")]
+    pub include_paths_in_markers: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_retention() -> u32 {
+    7
+}
+fn default_cap_chars() -> usize {
+    4000
+}
+fn default_cap_lines() -> usize {
+    200
+}
+
+impl Default for CompactConfig {
+    fn default() -> Self {
+        Self {
+            redact: true,
+            backup_retention_days: 7,
+            generic_cap_chars: 4000,
+            generic_cap_lines: 200,
+            include_paths_in_markers: true,
+        }
+    }
+}
+
+/// Get compact config. Falls back to defaults if config can't be loaded.
+pub fn compact_config() -> CompactConfig {
+    Config::load().map(|c| c.compact).unwrap_or_default()
+}
+
 /// Get limits config. Falls back to defaults if config can't be loaded.
 pub fn limits() -> LimitsConfig {
     Config::load().map(|c| c.limits).unwrap_or_default()
@@ -194,6 +240,16 @@ pub fn show_config() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_config_defaults_are_safe() {
+        let c = CompactConfig::default();
+        assert!(c.redact, "redaction must default on");
+        assert_eq!(c.backup_retention_days, 7);
+        assert_eq!(c.generic_cap_chars, 4000);
+        assert_eq!(c.generic_cap_lines, 200);
+        assert!(c.include_paths_in_markers);
+    }
 
     #[test]
     fn test_hooks_config_deserialize() {
