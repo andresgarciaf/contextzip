@@ -57,6 +57,7 @@ pub struct CompactStats {
     pub bash_cmds_deduped: usize,
     pub secrets_redacted: usize,
     pub generic_results_capped: usize,
+    pub signatures_dropped: usize,
 }
 
 impl CompactStats {
@@ -215,6 +216,10 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             cfg,
             &mut stats,
         );
+
+        if cfg.aggressive {
+            rewrite_record_metadata(&mut record, cfg, &mut stats);
+        }
 
         let written = serde_json::to_string(&record).unwrap_or_else(|_| line.to_string());
         out.push_str(&written);
@@ -469,6 +474,54 @@ fn rewrite_record(
                 }
             }
         }
+    }
+}
+
+/// Entry point for all metadata-rewrite axes (aggressive mode only).
+/// Each axis is a helper call; Tasks 3-4 will add more axes here.
+pub fn rewrite_record_metadata(record: &mut Value, _cfg: &CompactConfig, stats: &mut CompactStats) {
+    drop_thinking_signatures(record, stats);
+}
+
+/// SignatureDrop axis: removes replay-only crypto signatures from thinking
+/// blocks. The original signature is replaced with a `contextzip_sig`
+/// annotation carrying its SHA-256 and byte length so an `expand` step can
+/// verify or restore it without re-inflating the session file.
+///
+/// Idempotent: blocks that already have `contextzip_sig` (or that lack a
+/// `signature` field) are skipped silently.
+fn drop_thinking_signatures(record: &mut Value, stats: &mut CompactStats) {
+    let Some(content) = record
+        .get_mut("message")
+        .and_then(|m| m.get_mut("content"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for block in content.iter_mut() {
+        let Some(obj) = block.as_object_mut() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("thinking") {
+            continue;
+        }
+        // Skip if already processed (idempotency).
+        if obj.contains_key("contextzip_sig") {
+            continue;
+        }
+        let sig = match obj.get("signature").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+        let sha = sha256_hex(&sig);
+        let len = sig.len();
+        obj.remove("signature");
+        obj.insert(
+            "contextzip_sig".to_string(),
+            json!({"sha256": sha, "len": len}),
+        );
+        stats.signatures_dropped += 1;
     }
 }
 
@@ -1258,6 +1311,63 @@ mod tests {
         assert_eq!(
             second_stats.generic_results_capped, 0,
             "second pass must not re-cap"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn signature_dropped_only_when_aggressive() {
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        // aggressive OFF -> untouched
+        let off = CompactConfig::default();
+        let (out_off, s_off) = compact_session_str(&input, &off);
+        assert!(
+            out_off.contains("AAAABBBBCCCC"),
+            "signature must survive when not aggressive"
+        );
+        assert_eq!(s_off.signatures_dropped, 0);
+
+        // aggressive ON -> dropped + annotated with sha
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out_on, s_on) = compact_session_str(&input, &on);
+        assert!(
+            !out_on.contains("AAAABBBBCCCC"),
+            "signature must be dropped when aggressive"
+        );
+        assert!(
+            out_on.contains("contextzip_sig"),
+            "must annotate the dropped signature for expand"
+        );
+        assert_eq!(s_on.signatures_dropped, 1);
+    }
+
+    #[test]
+    fn signature_drop_is_idempotent() {
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+
+        // First pass: drops the signature.
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        assert_eq!(first_stats.signatures_dropped, 1);
+
+        // Second pass: contextzip_sig is already present - must be a no-op.
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(
+            second_stats.signatures_dropped, 0,
+            "second pass must not re-drop"
         );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
