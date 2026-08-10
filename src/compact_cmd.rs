@@ -167,7 +167,11 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
     } else {
         original
     };
+    // Clean up any partial write so a subsequent apply is not blocked by the
+    // backup.exists() guard. The original rename was atomic; this write path is
+    // not, so we remove on failure to close the partial-file window.
     std::fs::write(&backup, &backup_content)
+        .map_err(|e| { let _ = std::fs::remove_file(&backup); e })
         .with_context(|| format!("Failed to write backup {}", backup.display()))?;
     if let Err(e) = std::fs::remove_file(&session_path) {
         // Fail closed: remove the backup so original remains the live session.
@@ -563,6 +567,31 @@ mod tests {
         run_apply(session.to_str().unwrap(), 0)?;
         let bak = fs::read_to_string(backup_path(&session))?;
         assert!(!bak.contains(&pat), "backup must be redacted");
+        Ok(())
+    }
+
+    /// Verify that a failed backup write leaves no .bak behind so a subsequent
+    /// apply is not blocked by the backup.exists() guard. Injects failure by
+    /// making the session directory read-only before calling run_apply.
+    #[test]
+    #[cfg(unix)]
+    fn failed_backup_write_leaves_no_stale_bak() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new()?;
+        let session = make_repeatable_session(dir.path())?;
+        run_with_options(session.to_str().unwrap(), false, 0)?;
+
+        // Make the directory read-only so fs::write(&backup, ...) fails.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555))?;
+        let result = run_apply(session.to_str().unwrap(), 0);
+        // Restore before any assertion so TempDir cleanup succeeds.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755))?;
+
+        assert!(result.is_err(), "apply should fail when backup write fails");
+        assert!(
+            !backup_path(&session).exists(),
+            "no stale .bak must remain after failed write"
+        );
         Ok(())
     }
 
