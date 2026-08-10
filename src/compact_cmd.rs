@@ -31,7 +31,7 @@ pub fn run_with_options(target: &str, dry_run: bool, aggressive: bool, verbose: 
             .with_context(|| format!("Failed to read session: {}", session_path.display()))?;
         jsonl_rewriter::compact_session_str(&raw, &cfg).1
     } else {
-        let (_sidecar, stats) = jsonl_rewriter::compact_session_file(&session_path)
+        let (_sidecar, stats) = jsonl_rewriter::compact_session_file(&session_path, &cfg)
             .with_context(|| format!("Failed to compact session: {}", session_path.display()))?;
         stats
     };
@@ -608,6 +608,42 @@ mod tests {
         assert!(
             !backup_path(&session).exists(),
             "no stale .bak must remain after failed write"
+        );
+        Ok(())
+    }
+
+    /// Proves compact_session_file honors the cfg it is given (not an internal
+    /// load). A secret present with redact=false must appear in the sidecar;
+    /// with redact=true (default) it must be scrubbed.
+    #[test]
+    fn compact_session_file_threads_cfg_not_ignored() -> Result<()> {
+        use crate::config::CompactConfig;
+        use crate::jsonl_rewriter;
+
+        let dir = TempDir::new()?;
+        let pat = format!("dapi{}", "0".repeat(34));
+        let session = make_session_with_secret(dir.path(), &pat)?;
+
+        // redact=false - secret should be visible in sidecar
+        let cfg_no_redact = CompactConfig {
+            redact: false,
+            ..Default::default()
+        };
+        let (sidecar, _) = jsonl_rewriter::compact_session_file(&session, &cfg_no_redact)?;
+        let sidecar_content = fs::read_to_string(&sidecar)?;
+        assert!(
+            sidecar_content.contains(&pat),
+            "redact=false: secret must survive in sidecar"
+        );
+        fs::remove_file(&sidecar)?;
+
+        // redact=true (default) - secret must be scrubbed
+        let cfg_redact = CompactConfig::default();
+        let (sidecar2, _) = jsonl_rewriter::compact_session_file(&session, &cfg_redact)?;
+        let sidecar2_content = fs::read_to_string(&sidecar2)?;
+        assert!(
+            !sidecar2_content.contains(&pat),
+            "redact=true: secret must be scrubbed from sidecar"
         );
         Ok(())
     }

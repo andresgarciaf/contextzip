@@ -71,12 +71,11 @@ impl CompactStats {
 /// Compact a session JSONL file into a sidecar `.compressed` file.
 /// Returns the path of the sidecar plus aggregated stats. The original is never
 /// modified; rollback is `rm <sidecar>`.
-pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
+pub fn compact_session_file(input: &Path, cfg: &CompactConfig) -> Result<(PathBuf, CompactStats)> {
     let raw = fs::read_to_string(input)
         .with_context(|| format!("Failed to read session file: {}", input.display()))?;
 
-    let cfg = crate::config::compact_config();
-    let (out, stats) = compact_session_str(&raw, &cfg);
+    let (out, stats) = compact_session_str(&raw, cfg);
 
     let mut sidecar = input.to_path_buf();
     let new_name = match input.file_name().and_then(|s| s.to_str()) {
