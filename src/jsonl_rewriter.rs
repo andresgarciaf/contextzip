@@ -672,19 +672,26 @@ fn dedup_sidecar(record: &mut Value, stats: &mut CompactStats) {
         return;
     }
 
-    // Extract the sidecar's primary payload text (first present string).
-    let sidecar_text: String = {
+    // Extract the sidecar's primary payload text and which field it came from.
+    // "file.content" is represented as ("file", true) so we know to descend.
+    let (sidecar_text, matched_field, in_file_obj): (String, &str, bool) = {
         let Some(tur) = record.get("toolUseResult") else {
             return;
         };
-        let candidate = tur
-            .get("stdout")
-            .or_else(|| tur.get("originalFile"))
-            .or_else(|| tur.get("content"))
-            .or_else(|| tur.get("file").and_then(|f| f.get("content")));
-        match candidate.and_then(Value::as_str) {
-            Some(s) => s.to_string(),
-            None => return,
+        if let Some(s) = tur.get("stdout").and_then(Value::as_str) {
+            (s.to_string(), "stdout", false)
+        } else if let Some(s) = tur.get("originalFile").and_then(Value::as_str) {
+            (s.to_string(), "originalFile", false)
+        } else if let Some(s) = tur.get("content").and_then(Value::as_str) {
+            (s.to_string(), "content", false)
+        } else if let Some(s) = tur
+            .get("file")
+            .and_then(|f| f.get("content"))
+            .and_then(Value::as_str)
+        {
+            (s.to_string(), "content", true)
+        } else {
+            return;
         }
     };
 
@@ -744,14 +751,30 @@ fn dedup_sidecar(record: &mut Value, stats: &mut CompactStats) {
         return;
     }
 
-    if let Some(tur) = record.get_mut("toolUseResult") {
-        *tur = json!({
-            "contextzip_ref": "message.content",
-            "contextzip_compressed": {
-                "axis": "SidecarDedup",
-                "original_chars": payload_len
+    // Mutate the existing toolUseResult object in place: remove ONLY the
+    // matched field and insert the ref markers. Sibling fields (stderr,
+    // interrupted, isImage, structuredPatch, etc.) are preserved.
+    if let Some(tur) = record
+        .get_mut("toolUseResult")
+        .and_then(Value::as_object_mut)
+    {
+        if in_file_obj {
+            // matched field was file.content - remove content from file sub-object
+            if let Some(file_obj) = tur.get_mut("file").and_then(Value::as_object_mut) {
+                file_obj.remove(matched_field);
             }
-        });
+        } else {
+            tur.remove(matched_field);
+        }
+        tur.insert("contextzip_ref".to_string(), json!("message.content"));
+        tur.insert(
+            "contextzip_compressed".to_string(),
+            json!({
+                "axis": "SidecarDedup",
+                "original_chars": payload_len,
+                "replaced_field": if in_file_obj { "file.content" } else { matched_field }
+            }),
+        );
         stats.sidecars_deduped += 1;
     }
 }
@@ -1748,6 +1771,40 @@ mod tests {
         assert!(
             !out.contains("contextzip_ref"),
             "no ref when aggressive is off"
+        );
+    }
+
+    #[test]
+    fn sidecar_dedup_preserves_sibling_fields() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone(),"stderr":"some error","interrupted":false}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.sidecars_deduped, 1);
+        assert!(out.contains("contextzip_ref"), "sidecar collapsed");
+        let v: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            v["toolUseResult"]["stderr"].as_str(),
+            Some("some error"),
+            "stderr must survive sibling dedup"
+        );
+        assert_eq!(
+            v["toolUseResult"]["interrupted"].as_bool(),
+            Some(false),
+            "interrupted must survive sibling dedup"
+        );
+        // stdout (the matched field) must be gone
+        assert!(
+            v["toolUseResult"]["stdout"].is_null(),
+            "matched field must be removed"
         );
     }
 
