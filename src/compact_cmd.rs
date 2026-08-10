@@ -189,12 +189,15 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
     if let Err(e) = std::fs::rename(&sidecar, &session_path) {
         // Roll back: restore from the written backup so the user is not left with no live session.
         let _ = std::fs::rename(&backup, &session_path);
-        return Err(e).context("Failed to promote sidecar to live session; backup restored");
+        return Err(e).context(
+            "Failed to promote sidecar to live session; backup restored. \
+             Note: the restored session may differ from the original because \
+             secret redaction was applied when the backup was written.",
+        );
     }
 
-    let cfg2 = crate::config::compact_config();
     if let Some(parent) = session_path.parent() {
-        if let Err(e) = sweep_backups(parent, cfg2.backup_retention_days) {
+        if let Err(e) = sweep_backups(parent, cfg.backup_retention_days) {
             eprintln!("contextzip: sweep warning: {}", e);
         }
     }

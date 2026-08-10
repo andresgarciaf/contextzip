@@ -448,10 +448,6 @@ fn rewrite_record(
                     if first.tool_use_id == use_id {
                         return None; // this is the first - no dedup
                     }
-                    // Guard: skip if block is already compressed (idempotency).
-                    if block.get("contextzip_compressed").is_some() {
-                        return None;
-                    }
                     // Guard: skip if the first occurrence had empty output -
                     // deduping to an empty reference is data loss.
                     if !first.first_output_nonempty {
@@ -538,7 +534,7 @@ fn replace_with_read_ref(
 /// Shared by GrepGlobDedup (Task 6) and BashCmdDedup (Task 7).
 /// Returns false (no-op) if the generated marker would be >= original_len,
 /// mirroring recompress_bash_block's never-inflate invariant.
-pub fn replace_with_generic_ref(
+fn replace_with_generic_ref(
     block: &mut Value,
     axis: &str,
     first_id: &str,
