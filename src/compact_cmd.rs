@@ -87,7 +87,8 @@ pub fn run_all_sessions(dry_run: bool, verbose: u8) -> Result<()> {
                     // good enough for an analytics summary, and acceptable for
                     // batch runs (most sessions are <10 MB).
                     if let Ok(raw) = std::fs::read_to_string(&path) {
-                        let s = jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1;
+                        let s =
+                            jsonl_rewriter::compact_session_str(&raw, &config::compact_config()).1;
                         total_in += s.bytes_in;
                         total_out += s.bytes_out;
                         total_dedup += s.read_results_deduped;
@@ -171,7 +172,9 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
     // backup.exists() guard. The original rename was atomic; this write path is
     // not, so we remove on failure to close the partial-file window.
     std::fs::write(&backup, &backup_content)
-        .inspect_err(|_| { let _ = std::fs::remove_file(&backup); })
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&backup);
+        })
         .with_context(|| format!("Failed to write backup {}", backup.display()))?;
     if let Err(e) = std::fs::remove_file(&session_path) {
         // Fail closed: remove the backup so original remains the live session.
@@ -212,7 +215,9 @@ fn sweep_backups(project_dir: &Path, retention_days: u32) -> Result<usize> {
         return Ok(0);
     }
     let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(retention_days as u64 * 86_400))
+        .checked_sub(std::time::Duration::from_secs(
+            retention_days as u64 * 86_400,
+        ))
         .unwrap_or(std::time::UNIX_EPOCH);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(project_dir) else {

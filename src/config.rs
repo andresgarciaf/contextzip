@@ -142,14 +142,28 @@ pub struct CompactConfig {
     pub include_paths_in_markers: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_retention() -> u32 { 7 }
-fn default_cap_chars() -> usize { 4000 }
-fn default_cap_lines() -> usize { 200 }
+fn default_true() -> bool {
+    true
+}
+fn default_retention() -> u32 {
+    7
+}
+fn default_cap_chars() -> usize {
+    4000
+}
+fn default_cap_lines() -> usize {
+    200
+}
 
 impl Default for CompactConfig {
     fn default() -> Self {
-        Self { redact: true, backup_retention_days: 7, generic_cap_chars: 4000, generic_cap_lines: 200, include_paths_in_markers: true }
+        Self {
+            redact: true,
+            backup_retention_days: 7,
+            generic_cap_chars: 4000,
+            generic_cap_lines: 200,
+            include_paths_in_markers: true,
+        }
     }
 }
 

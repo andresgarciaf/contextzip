@@ -1,19 +1,38 @@
 //! Session-history compressor for Claude Code JSONL session logs.
 //!
 //! Operates on the JSONL produced under `~/.claude/projects/<project>/<session>.jsonl`.
-//! Two safe, opt-in axes ship in v0.2:
+//! Five safe, opt-in axes ship in v0.2:
 //!
-//! - **`ReadDedup`** — when the same file is read multiple times via the `Read`
-//!   tool, the second and later `tool_result` payloads are replaced with a
-//!   short reference back to the first read. A SHA-256 of the file at compact
-//!   time is recorded so that, if the on-disk file later changes, an `expand`
-//!   step can detect the mismatch and restore the original content.
-//! - **`BashHistoryCompact`** — past `Bash` tool_results are re-fed through
-//!   ContextZip's normal filter pipeline. Idempotent: re-running on already
-//!   compressed records is a no-op.
+//! - **`ReadDedup`** - repeated `Read` tool_results for the same `file_path` are
+//!   replaced with a short reference back to the first occurrence. A SHA-256 of
+//!   the file content is recorded at compact time so that a future `expand` step
+//!   can detect staleness (on-disk content changed) and restore the original.
+//!
+//! - **`GrepGlobDedup`** - repeated identical `Grep` or `Glob` tool_results
+//!   (keyed on normalized input args) are replaced with a reference. Avoids
+//!   inflating context when the same search is re-run across turns.
+//!
+//! - **`BashCmdDedup`** - repeated identical `Bash` commands whose first result
+//!   was non-empty are replaced with a reference. Commands whose first output was
+//!   empty are not deduplicated, since re-runs may legitimately differ.
+//!
+//! - **`BashHistoryCompact`** - past `Bash` tool_results are re-fed through
+//!   ContextZip's normal filter pipeline (ANSI strip, repeat-line tally, line
+//!   cap). Only the first occurrence of each repeated command is compressed;
+//!   subsequent occurrences are handled by `BashCmdDedup`. Idempotent: re-running
+//!   on already-compressed records is a no-op.
+//!
+//! - **`GenericResultCap`** - any other oversized tool_result (MCP, Task,
+//!   WebFetch, etc.) is ANSI-stripped and line-capped at the configured limit.
+//!   Does not deduplicate; only reduces runaway payloads.
+//!
+//! A secret-redaction scrub pass (`crate::redact`) runs over the compacted output
+//! before any sidecar or `.bak` write when `compact.redact` is enabled in config.
+//! All five axes are reversible, idempotent, and guaranteed never to inflate the
+//! token count above the original.
 //!
 //! Records are never removed and the `uuid` / `parentUuid` chain is never
-//! altered, only `tool_result` content payloads are rewritten. The original
+//! altered - only `tool_result` content payloads are rewritten. The original
 //! `.jsonl` is left untouched; output goes to a sibling `.compressed` file.
 
 use anyhow::{Context, Result};
@@ -332,13 +351,11 @@ fn index_record(
                 // ponytail: dedup is command-keyed, not content-keyed; non-deterministic
                 // commands (date, ls after changes) collapse to the first result.
                 // Upgrade path: content-hash keying if this bites.
-                first_bashcmd_for
-                    .entry(cmd)
-                    .or_insert_with(|| FirstResult {
-                        tool_use_id: id.to_string(),
-                        // Confirmed non-empty in the content scan pass below.
-                        first_output_nonempty: false,
-                    });
+                first_bashcmd_for.entry(cmd).or_insert_with(|| FirstResult {
+                    tool_use_id: id.to_string(),
+                    // Confirmed non-empty in the content scan pass below.
+                    first_output_nonempty: false,
+                });
             }
         }
     }
@@ -778,7 +795,8 @@ mod tests {
             make_assistant_read("u2", "/abs/b.rs"),
             make_user_tool_result("u2", "let b = 2;"),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
+        let (out, stats) =
+            compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.read_results_deduped, 0);
         assert!(out.contains("let a = 1;"));
         assert!(out.contains("let b = 2;"));
@@ -791,7 +809,8 @@ mod tests {
             make_assistant_bash("b1", "noisy"),
             make_user_tool_result("b1", &noisy),
         ];
-        let (out, stats) = compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
+        let (out, stats) =
+            compact_session_str(&jsonl(&records), &crate::config::CompactConfig::default());
         assert_eq!(stats.bash_results_recompressed, 1);
         // Repeated 'ok' lines should be collapsed into a tally
         assert!(out.contains("(×"), "expected tally marker in {}", out);
@@ -806,8 +825,10 @@ mod tests {
             make_user_tool_result("b1", &noisy),
         ];
         let input = jsonl(&records);
-        let (first_out, first_stats) = compact_session_str(&input, &crate::config::CompactConfig::default());
-        let (second_out, second_stats) = compact_session_str(&first_out, &crate::config::CompactConfig::default());
+        let (first_out, first_stats) =
+            compact_session_str(&input, &crate::config::CompactConfig::default());
+        let (second_out, second_stats) =
+            compact_session_str(&first_out, &crate::config::CompactConfig::default());
         assert_eq!(first_stats.bash_results_recompressed, 1);
         assert_eq!(second_stats.bash_results_recompressed, 0);
         assert_eq!(first_out, second_out);
@@ -883,7 +904,10 @@ mod tests {
         let mut cfg = crate::config::CompactConfig::default();
         cfg.include_paths_in_markers = false;
         let (out, _) = compact_session_str(&jsonl(&records), &cfg);
-        assert!(out.contains("\"content_sha256\""), "sha must be recorded for staleness checks");
+        assert!(
+            out.contains("\"content_sha256\""),
+            "sha must be recorded for staleness checks"
+        );
         // Path must be absent from the dedup marker and annotation written for
         // the second (deduplicated) user tool_result record. We verify by
         // checking the rewritten user record (line 4) directly.
@@ -898,14 +922,19 @@ mod tests {
         // annotation must have empty file_path
         let v: Value = serde_json::from_str(dedup_line).unwrap();
         let file_path = v
-            .get("message").and_then(|m| m.get("content"))
+            .get("message")
+            .and_then(|m| m.get("content"))
             .and_then(Value::as_array)
             .and_then(|a| a.first())
             .and_then(|b| b.get("contextzip_compressed"))
             .and_then(|c| c.get("file_path"))
             .and_then(Value::as_str)
             .unwrap_or("NOT_FOUND");
-        assert_eq!(file_path, "", "file_path in annotation must be empty, got: {}", file_path);
+        assert_eq!(
+            file_path, "",
+            "file_path in annotation must be empty, got: {}",
+            file_path
+        );
     }
 
     #[test]
@@ -920,7 +949,8 @@ mod tests {
     #[test]
     fn grep_dedup_replaces_repeat_with_reference() {
         // Output must be longer than the ~72-char dedup marker to pass the never-inflate guard.
-        let grep_out = "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
+        let grep_out =
+            "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
         let records = [
             make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
             make_user_tool_result("g1", grep_out),
@@ -930,24 +960,47 @@ mod tests {
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
         assert_eq!(stats.grepglob_results_deduped, 1);
-        assert!(out.contains("GrepGlobDedup"), "missing GrepGlobDedup marker in {}", out);
+        assert!(
+            out.contains("GrepGlobDedup"),
+            "missing GrepGlobDedup marker in {}",
+            out
+        );
         // First result's content must survive intact.
-        assert!(out.contains("fn alpha"), "first Grep result content must be preserved");
-        assert!(out.contains("fn beta"), "first Grep result content must be preserved");
+        assert!(
+            out.contains("fn alpha"),
+            "first Grep result content must be preserved"
+        );
+        assert!(
+            out.contains("fn beta"),
+            "first Grep result content must be preserved"
+        );
         // Second result's body must be replaced - original text gone from the dedup line.
         let lines: Vec<&str> = out.lines().collect();
         let dedup_line = lines[3];
-        assert!(!dedup_line.contains("fn alpha"), "second result body must be replaced, got: {}", dedup_line);
-        assert!(dedup_line.contains("GrepGlobDedup"), "second result must carry dedup marker");
+        assert!(
+            !dedup_line.contains("fn alpha"),
+            "second result body must be replaced, got: {}",
+            dedup_line
+        );
+        assert!(
+            dedup_line.contains("GrepGlobDedup"),
+            "second result must carry dedup marker"
+        );
     }
 
     #[test]
     fn grep_dedup_does_not_touch_unique_results() {
         let records = [
             make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
-            make_user_tool_result("g1", "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma"),
+            make_user_tool_result(
+                "g1",
+                "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma",
+            ),
             make_assistant_tool("g2", "Grep", json!({"pattern":"struct ","path":"src"})),
-            make_user_tool_result("g2", "src/b.rs:5: struct Foo\nsrc/c.rs:6: struct Bar\nsrc/d.rs:7: struct Baz"),
+            make_user_tool_result(
+                "g2",
+                "src/b.rs:5: struct Foo\nsrc/c.rs:6: struct Bar\nsrc/d.rs:7: struct Baz",
+            ),
         ];
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
@@ -958,7 +1011,8 @@ mod tests {
 
     #[test]
     fn grep_dedup_is_idempotent() {
-        let grep_out = "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
+        let grep_out =
+            "src/a.rs:1: fn alpha\nsrc/b.rs:2: fn beta\nsrc/c.rs:3: fn gamma\nsrc/d.rs:4: fn delta";
         let records = [
             make_assistant_tool("g1", "Grep", json!({"pattern":"fn ","path":"src"})),
             make_user_tool_result("g1", grep_out),
@@ -970,7 +1024,10 @@ mod tests {
         let (first_out, first_stats) = compact_session_str(&input, &cfg);
         let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
         assert_eq!(first_stats.grepglob_results_deduped, 1);
-        assert_eq!(second_stats.grepglob_results_deduped, 0, "second pass must not re-dedup");
+        assert_eq!(
+            second_stats.grepglob_results_deduped, 0,
+            "second pass must not re-dedup"
+        );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 
@@ -987,14 +1044,28 @@ mod tests {
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
         assert_eq!(stats.bash_cmds_deduped, 1);
-        assert!(out.contains("BashCmdDedup"), "missing BashCmdDedup marker in {}", out);
+        assert!(
+            out.contains("BashCmdDedup"),
+            "missing BashCmdDedup marker in {}",
+            out
+        );
         // First occurrence's output must be preserved.
-        assert!(out.contains("file.txt"), "first Bash result must be preserved");
+        assert!(
+            out.contains("file.txt"),
+            "first Bash result must be preserved"
+        );
         // Second occurrence's body must be replaced.
         let lines: Vec<&str> = out.lines().collect();
         let dedup_line = lines[3];
-        assert!(!dedup_line.contains("file.txt"), "second result body must be replaced, got: {}", dedup_line);
-        assert!(dedup_line.contains("BashCmdDedup"), "second result must carry dedup marker");
+        assert!(
+            !dedup_line.contains("file.txt"),
+            "second result body must be replaced, got: {}",
+            dedup_line
+        );
+        assert!(
+            dedup_line.contains("BashCmdDedup"),
+            "second result must carry dedup marker"
+        );
     }
 
     #[test]
@@ -1007,9 +1078,18 @@ mod tests {
         ];
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
-        assert_eq!(stats.bash_cmds_deduped, 0, "unique commands must not be deduped");
-        assert!(out.contains("file1"), "first command output must be preserved");
-        assert!(out.contains("On branch main"), "second command output must be preserved");
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "unique commands must not be deduped"
+        );
+        assert!(
+            out.contains("file1"),
+            "first command output must be preserved"
+        );
+        assert!(
+            out.contains("On branch main"),
+            "second command output must be preserved"
+        );
     }
 
     #[test]
@@ -1026,7 +1106,10 @@ mod tests {
         let (first_out, first_stats) = compact_session_str(&input, &cfg);
         let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
         assert_eq!(first_stats.bash_cmds_deduped, 1);
-        assert_eq!(second_stats.bash_cmds_deduped, 0, "second pass must not re-dedup");
+        assert_eq!(
+            second_stats.bash_cmds_deduped, 0,
+            "second pass must not re-dedup"
+        );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 
@@ -1043,8 +1126,14 @@ mod tests {
         ];
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
-        assert_eq!(stats.bash_cmds_deduped, 0, "must not dedup when first output was empty");
-        assert!(out.contains("Sun Aug 10"), "second result must be preserved when first was empty");
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "must not dedup when first output was empty"
+        );
+        assert!(
+            out.contains("Sun Aug 10"),
+            "second result must be preserved when first was empty"
+        );
     }
 
     #[test]
@@ -1061,7 +1150,10 @@ mod tests {
         let original = jsonl(&records);
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&original, &cfg);
-        assert_eq!(stats.bash_cmds_deduped, 0, "must not count dedup when marker would inflate");
+        assert_eq!(
+            stats.bash_cmds_deduped, 0,
+            "must not count dedup when marker would inflate"
+        );
         // Length must not grow beyond the original.
         assert!(
             out.len() <= original.len() + 10,
@@ -1073,7 +1165,10 @@ mod tests {
 
     #[test]
     fn generic_cap_trims_oversized_unknown_tool_result() {
-        let big = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let records = [
             make_assistant_tool("m1", "mcp__some__tool", json!({})),
             make_user_tool_result("m1", &big),
@@ -1086,7 +1181,10 @@ mod tests {
 
     #[test]
     fn generic_cap_leaves_small_results_untouched() {
-        let small = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let small = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         // small is well under both thresholds (200 lines, 4000 chars)
         let records = [
             make_assistant_tool("m1", "mcp__some__tool", json!({})),
@@ -1094,13 +1192,22 @@ mod tests {
         ];
         let cfg = crate::config::CompactConfig::default();
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
-        assert_eq!(stats.generic_results_capped, 0, "small result must not be capped");
-        assert!(out.contains("line 0"), "small result content must be preserved");
+        assert_eq!(
+            stats.generic_results_capped, 0,
+            "small result must not be capped"
+        );
+        assert!(
+            out.contains("line 0"),
+            "small result content must be preserved"
+        );
     }
 
     #[test]
     fn generic_cap_is_idempotent() {
-        let big = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let records = [
             make_assistant_tool("m1", "mcp__some__tool", json!({})),
             make_user_tool_result("m1", &big),
@@ -1110,7 +1217,10 @@ mod tests {
         let (first_out, first_stats) = compact_session_str(&input, &cfg);
         let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
         assert_eq!(first_stats.generic_results_capped, 1);
-        assert_eq!(second_stats.generic_results_capped, 0, "second pass must not re-cap");
+        assert_eq!(
+            second_stats.generic_results_capped, 0,
+            "second pass must not re-cap"
+        );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 }
