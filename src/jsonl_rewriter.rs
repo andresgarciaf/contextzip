@@ -58,6 +58,7 @@ pub struct CompactStats {
     pub secrets_redacted: usize,
     pub generic_results_capped: usize,
     pub signatures_dropped: usize,
+    pub media_referenced: usize,
 }
 
 impl CompactStats {
@@ -479,8 +480,9 @@ fn rewrite_record(
 
 /// Entry point for all metadata-rewrite axes (aggressive mode only).
 /// Each axis is a helper call; Tasks 3-4 will add more axes here.
-pub fn rewrite_record_metadata(record: &mut Value, _cfg: &CompactConfig, stats: &mut CompactStats) {
+pub fn rewrite_record_metadata(record: &mut Value, cfg: &CompactConfig, stats: &mut CompactStats) {
     drop_thinking_signatures(record, stats);
+    replace_media_with_sha_markers(record, cfg, stats);
 }
 
 /// SignatureDrop axis: removes replay-only crypto signatures from thinking
@@ -523,6 +525,119 @@ fn drop_thinking_signatures(record: &mut Value, stats: &mut CompactStats) {
         );
         stats.signatures_dropped += 1;
     }
+}
+
+/// MediaReference axis: replaces inlined base64 image data with a sha marker.
+///
+/// Target A: `image` blocks in `record["message"]["content"]` where
+/// `block["source"]["type"] == "base64"` and `source["data"]` is non-empty.
+///
+/// Target B: `record["toolUseResult"]["file"]["base64"]` if non-empty.
+///
+/// Never-inflate: skips if the marker length >= original data length.
+/// Idempotent: skips blocks that already carry `contextzip_media`.
+fn replace_media_with_sha_markers(
+    record: &mut Value,
+    _cfg: &CompactConfig,
+    stats: &mut CompactStats,
+) {
+    // Target A: image blocks in message.content.
+    // We need to collect indices to avoid borrow conflicts.
+    let content_len = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    for i in 0..content_len {
+        let Some(content_arr) = record
+            .get_mut("message")
+            .and_then(|m| m.get_mut("content"))
+            .and_then(Value::as_array_mut)
+        else {
+            break;
+        };
+        let Some(block) = content_arr.get_mut(i) else {
+            continue;
+        };
+        if block.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        // Idempotency: skip if already processed.
+        if block.get("contextzip_media").is_some() {
+            continue;
+        }
+        let source_type = block
+            .get("source")
+            .and_then(|s| s.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if source_type != "base64" {
+            continue;
+        }
+        let data = match block
+            .get("source")
+            .and_then(|s| s.get("data"))
+            .and_then(Value::as_str)
+        {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => continue,
+        };
+        let media_type = block
+            .get("source")
+            .and_then(|s| s.get("media_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let sha = sha256_hex(&data);
+        let n = data.len();
+        let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
+        // Never-inflate: skip if marker is not smaller than the data.
+        if marker.len() >= n {
+            continue;
+        }
+        let annotation = json!({"sha256": sha, "bytes": n, "media_type": media_type});
+        // Mutate source.data.
+        let Some(source) = block.get_mut("source").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        source.insert("data".to_string(), json!(marker));
+        // Set sibling contextzip_media on the block.
+        let Some(obj) = block.as_object_mut() else {
+            continue;
+        };
+        obj.insert("contextzip_media".to_string(), annotation);
+        stats.media_referenced += 1;
+    }
+
+    // Target B: toolUseResult.file.base64.
+    let Some(file_obj) = record
+        .get_mut("toolUseResult")
+        .and_then(|t| t.get_mut("file"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    // Idempotency: skip if already processed.
+    if file_obj.contains_key("contextzip_media") {
+        return;
+    }
+    let data = match file_obj.get("base64").and_then(Value::as_str) {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => return,
+    };
+    let sha = sha256_hex(&data);
+    let n = data.len();
+    let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
+    if marker.len() >= n {
+        return;
+    }
+    let annotation = json!({"sha256": sha, "bytes": n, "media_type": ""});
+    file_obj.insert("base64".to_string(), json!(marker));
+    file_obj.insert("contextzip_media".to_string(), annotation);
+    stats.media_referenced += 1;
 }
 
 fn block_text_len(block: &Value) -> usize {
@@ -1346,6 +1461,86 @@ mod tests {
             "must annotate the dropped signature for expand"
         );
         assert_eq!(s_on.signatures_dropped, 1);
+    }
+
+    #[test]
+    fn media_referenced_when_aggressive() {
+        let data = "X".repeat(5000); // stand-in base64 payload
+        let rec = json!({"type":"user","uuid":"u1","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert!(
+            !out.contains(&"X".repeat(5000)),
+            "base64 data must be replaced"
+        );
+        assert!(
+            out.contains("contextzip_media"),
+            "must annotate sha for expand"
+        );
+        assert_eq!(s.media_referenced, 1);
+
+        // never-inflate: a tiny image is left alone
+        let tiny = json!({"type":"user","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}}]}});
+        let (out2, s2) = compact_session_str(&format!("{}\n", tiny), &on);
+        assert_eq!(s2.media_referenced, 0);
+        assert!(out2.contains("\"data\":\"AA\""));
+
+        // aggressive OFF -> media left untouched
+        let off = CompactConfig::default();
+        let (out_off, s_off) = compact_session_str(&input, &off);
+        assert!(
+            out_off.contains(&"X".repeat(50)),
+            "base64 data must survive when not aggressive"
+        );
+        assert_eq!(s_off.media_referenced, 0);
+    }
+
+    #[test]
+    fn media_referenced_tool_use_result_file_base64() {
+        let data = "B".repeat(3000);
+        let rec = json!({"type":"assistant","uuid":"a1","toolUseResult":{"file":{"base64": data}}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert!(
+            !out.contains(&"B".repeat(3000)),
+            "base64 in file must be replaced"
+        );
+        assert!(out.contains("contextzip_media"), "must annotate sha");
+        assert_eq!(s.media_referenced, 1);
+    }
+
+    #[test]
+    fn media_referenced_is_idempotent() {
+        let data = "X".repeat(5000);
+        let rec = json!({"type":"user","uuid":"u1","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(first_stats.media_referenced, 1);
+        assert_eq!(
+            second_stats.media_referenced, 0,
+            "second pass must not re-replace"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 
     #[test]
