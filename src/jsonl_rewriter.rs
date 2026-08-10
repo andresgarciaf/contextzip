@@ -555,6 +555,13 @@ fn drop_thinking_signatures(record: &mut Value, stats: &mut CompactStats) {
             Some(s) if !s.is_empty() => s.to_string(),
             _ => continue,
         };
+        // Never-inflate: the annotation `{"sha256":"<64 hex>","len":<N>}` serializes
+        // to ~90 bytes max. Use 100 as a conservative upper bound. Skip the drop when
+        // the annotation alone is at least as large as the original signature.
+        const SIG_ANNOTATION_OVERHEAD: usize = 100;
+        if SIG_ANNOTATION_OVERHEAD >= sig.len() {
+            continue;
+        }
         let sha = sha256_hex(&sig);
         let len = sig.len();
         obj.remove("signature");
@@ -573,13 +580,17 @@ fn drop_thinking_signatures(record: &mut Value, stats: &mut CompactStats) {
 ///
 /// Target B: `record["toolUseResult"]["file"]["base64"]` if non-empty.
 ///
-/// Never-inflate: skips if the marker length >= original data length.
+/// Never-inflate: skips if marker + annotation overhead >= original data length.
 /// Idempotent: skips blocks that already carry `contextzip_media`.
 fn replace_media_with_sha_markers(
     record: &mut Value,
     _cfg: &CompactConfig,
     stats: &mut CompactStats,
 ) {
+    // The sibling `contextzip_media` annotation serializes to ~120 bytes max.
+    // Used in both Target A and B never-inflate guards.
+    const MEDIA_ANNOTATION_OVERHEAD: usize = 120;
+
     // Target A: image blocks in message.content.
     // We need to collect indices to avoid borrow conflicts.
     let content_len = record
@@ -633,8 +644,8 @@ fn replace_media_with_sha_markers(
         let sha = sha256_hex(&data);
         let n = data.len();
         let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
-        // Never-inflate: skip if marker is not smaller than the data.
-        if marker.len() >= n {
+        // Never-inflate: skip if marker + annotation overhead >= original data length.
+        if marker.len() + MEDIA_ANNOTATION_OVERHEAD >= n {
             continue;
         }
         let annotation = json!({"sha256": sha, "bytes": n, "media_type": media_type});
@@ -670,7 +681,8 @@ fn replace_media_with_sha_markers(
     let sha = sha256_hex(&data);
     let n = data.len();
     let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
-    if marker.len() >= n {
+    // Never-inflate: same guard as Target A - account for annotation overhead (~120 bytes).
+    if marker.len() + MEDIA_ANNOTATION_OVERHEAD >= n {
         return;
     }
     let annotation = json!({"sha256": sha, "bytes": n, "media_type": ""});
@@ -1684,7 +1696,7 @@ mod tests {
     #[test]
     fn signature_dropped_only_when_aggressive() {
         let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
-            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx"}
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx_padding_to_exceed_annotation_overhead_of_one_hundred_bytes_xxxxxxxxxxx"}
         ]}});
         let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
 
@@ -1797,7 +1809,7 @@ mod tests {
     #[test]
     fn signature_drop_is_idempotent() {
         let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
-            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx"}
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx_padding_to_exceed_annotation_overhead_of_one_hundred_bytes_xxxxxxxxxxx"}
         ]}});
         let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
         let on = CompactConfig {
@@ -1941,6 +1953,89 @@ mod tests {
         let (out_off, s_off) = compact_session_str(&jsonl(&records), &CompactConfig::default());
         assert_eq!(s_off.mcp_results_compacted, 0);
         let _ = out_off; // suppress unused warning
+    }
+
+    #[test]
+    fn signature_drop_never_inflates_short_sig() {
+        // A very short signature ("abc") is shorter than the annotation overhead (~100 bytes),
+        // so dropping it would inflate the record. It must be left untouched.
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"some reasoning","signature":"abc"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(
+            s.signatures_dropped, 0,
+            "short signature must not be dropped (would inflate)"
+        );
+        assert!(
+            out.contains("\"abc\""),
+            "short signature must be preserved intact"
+        );
+    }
+
+    #[test]
+    fn signature_drop_does_drop_long_sig() {
+        // A realistic long signature (>100 bytes) must still be dropped.
+        let long_sig = "A".repeat(200);
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"some reasoning","signature": long_sig}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.signatures_dropped, 1, "long signature must be dropped");
+        assert!(
+            !out.contains(&"A".repeat(200)),
+            "long signature must not appear in output"
+        );
+        assert!(out.contains("contextzip_sig"), "must carry annotation");
+    }
+
+    #[test]
+    fn sidecar_dedup_floor_boundary() {
+        // Payload at or below the 120-char floor must NOT be deduped.
+        let short_body = "x".repeat(120);
+        let rec_short = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": short_body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": short_body.clone()}
+        });
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (_, s_short) = compact_session_str(
+            &format!("{}\n", serde_json::to_string(&rec_short).unwrap()),
+            &on,
+        );
+        assert_eq!(
+            s_short.sidecars_deduped, 0,
+            "payload <= 120 chars must not be deduped"
+        );
+
+        // Payload clearly above the floor (200 chars) must be deduped.
+        let long_body = "y".repeat(200);
+        let rec_long = json!({
+            "type":"user","uuid":"u2",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t2","content": long_body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": long_body.clone()}
+        });
+        let (_, s_long) = compact_session_str(
+            &format!("{}\n", serde_json::to_string(&rec_long).unwrap()),
+            &on,
+        );
+        assert_eq!(
+            s_long.sidecars_deduped, 1,
+            "payload > 120 chars must be deduped"
+        );
     }
 
     #[test]
