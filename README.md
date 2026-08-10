@@ -248,10 +248,15 @@ Bash "cargo test"        repeated lines
 </table>
 
 ```bash
-contextzip compact <session-id>   # writes a reversible .compressed sidecar
-contextzip apply   <session-id>   # atomic swap; original kept as .bak
-contextzip expand  <session-id>   # roll back; sidecar preserved
+contextzip compact <session-id>               # safe axes: writes a reversible .compressed sidecar
+contextzip compact <session-id> --aggressive  # + metadata axes (sidecar/media/signature/MCP): up to 86%
+contextzip apply   <session-id>               # atomic swap; original kept as .bak
+contextzip expand  <session-id>               # roll back; sidecar preserved
 ```
+
+Session compression is **manual** — installing ContextZip never touches your sessions on
+its own; you run these commands when you want them. Full walkthrough (automatic vs manual,
+the safe try-it order, config, guarantees): **[docs/SESSION-COMPRESSION.md](docs/SESSION-COMPRESSION.md)**.
 
 <details>
 <summary><b>More examples: Rust panic, Python, Web page, ANSI, Docker failure, Java/Go</b></summary>
