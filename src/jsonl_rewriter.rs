@@ -26,10 +26,39 @@
 //!   WebFetch, etc.) is ANSI-stripped and line-capped at the configured limit.
 //!   Does not deduplicate; only reduces runaway payloads.
 //!
+//! Four additional axes ship in v0.3 and are gated behind `--aggressive` /
+//! `compact.aggressive` in config (DEFAULT OFF). They touch Claude-Code-internal
+//! fields that are safe to compact for context reduction but should only be
+//! promoted via `contextzip apply` after the mandatory resume test confirms
+//! Claude Code can still open and continue the session. All four are fully
+//! reversible: `contextzip expand` restores the original `.jsonl` from the `.bak`
+//! written by `apply`.
+//!
+//! - **`SignatureDrop`** - removes replay-only crypto signatures from `thinking`
+//!   blocks in `message.content`. The signature is replaced with a
+//!   `contextzip_sig` annotation carrying its SHA-256 and byte length so staleness
+//!   can be detected at expand time.
+//!
+//! - **`MediaReference`** - replaces inlined base64 image data in
+//!   `message.content` image blocks (`source.data`) and in
+//!   `toolUseResult.file.base64` with a short `[contextzip: media sha256=...]`
+//!   marker. The original byte count and SHA-256 are recorded as a sibling
+//!   `contextzip_media` annotation.
+//!
+//! - **`SidecarDedup`** - collapses the `toolUseResult` field when its primary
+//!   payload (stdout / originalFile / content / file.content) is byte-equal to
+//!   the corresponding `message.content` tool_result text. The duplicated payload
+//!   is removed and a `contextzip_ref` pointer is inserted; sibling fields
+//!   (stderr, interrupted, etc.) are always preserved.
+//!
+//! - **`McpJsonCompact`** - minifies MCP tool_result JSON payloads and unwraps
+//!   double-encoded `{"result":"{...}"}` patterns. Acts only when the compacted
+//!   form is strictly smaller than the original (never-inflate invariant).
+//!
 //! A secret-redaction scrub pass (`crate::redact`) runs over the compacted output
 //! before any sidecar or `.bak` write when `compact.redact` is enabled in config.
-//! All five axes are reversible, idempotent, and guaranteed never to inflate the
-//! token count above the original.
+//! All axes are reversible, idempotent, and guaranteed never to inflate the token
+//! count above the original.
 //!
 //! Records are never removed and the `uuid` / `parentUuid` chain is never
 //! altered - only `tool_result` content payloads are rewritten. The original
@@ -57,6 +86,10 @@ pub struct CompactStats {
     pub bash_cmds_deduped: usize,
     pub secrets_redacted: usize,
     pub generic_results_capped: usize,
+    pub signatures_dropped: usize,
+    pub media_referenced: usize,
+    pub sidecars_deduped: usize,
+    pub mcp_results_compacted: usize,
 }
 
 impl CompactStats {
@@ -71,12 +104,11 @@ impl CompactStats {
 /// Compact a session JSONL file into a sidecar `.compressed` file.
 /// Returns the path of the sidecar plus aggregated stats. The original is never
 /// modified; rollback is `rm <sidecar>`.
-pub fn compact_session_file(input: &Path) -> Result<(PathBuf, CompactStats)> {
+pub fn compact_session_file(input: &Path, cfg: &CompactConfig) -> Result<(PathBuf, CompactStats)> {
     let raw = fs::read_to_string(input)
         .with_context(|| format!("Failed to read session file: {}", input.display()))?;
 
-    let cfg = crate::config::compact_config();
-    let (out, stats) = compact_session_str(&raw, &cfg);
+    let (out, stats) = compact_session_str(&raw, cfg);
 
     let mut sidecar = input.to_path_buf();
     let new_name = match input.file_name().and_then(|s| s.to_str()) {
@@ -216,6 +248,10 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             cfg,
             &mut stats,
         );
+
+        if cfg.aggressive {
+            rewrite_record_metadata(&mut record, cfg, &mut stats);
+        }
 
         let written = serde_json::to_string(&record).unwrap_or_else(|_| line.to_string());
         out.push_str(&written);
@@ -448,10 +484,6 @@ fn rewrite_record(
                     if first.tool_use_id == use_id {
                         return None; // this is the first - no dedup
                     }
-                    // Guard: skip if block is already compressed (idempotency).
-                    if block.get("contextzip_compressed").is_some() {
-                        return None;
-                    }
                     // Guard: skip if the first occurrence had empty output -
                     // deduping to an empty reference is data loss.
                     if !first.first_output_nonempty {
@@ -468,12 +500,331 @@ fn rewrite_record(
                     stats.bash_results_recompressed += 1;
                 }
             }
+            name if name.starts_with("mcp__") && cfg.aggressive => {
+                // mcp_results_compacted is incremented inside the helper when it acts.
+                // If the block is non-JSON or already minimal, fall through to generic cap.
+                if !mcp_json_compact_block(block, stats) && generic_cap_block(block, cfg) {
+                    stats.generic_results_capped += 1;
+                }
+            }
             _ => {
                 if generic_cap_block(block, cfg) {
                     stats.generic_results_capped += 1;
                 }
             }
         }
+    }
+}
+
+/// Entry point for all metadata-rewrite axes (aggressive mode only).
+/// Each axis is a helper call.
+fn rewrite_record_metadata(record: &mut Value, cfg: &CompactConfig, stats: &mut CompactStats) {
+    drop_thinking_signatures(record, stats);
+    replace_media_with_sha_markers(record, cfg, stats);
+    dedup_sidecar(record, stats);
+}
+
+/// SignatureDrop axis: removes replay-only crypto signatures from thinking
+/// blocks. The original signature is replaced with a `contextzip_sig`
+/// annotation carrying its SHA-256 and byte length so an `expand` step can
+/// verify or restore it without re-inflating the session file.
+///
+/// Idempotent: blocks that already have `contextzip_sig` (or that lack a
+/// `signature` field) are skipped silently.
+fn drop_thinking_signatures(record: &mut Value, stats: &mut CompactStats) {
+    let Some(content) = record
+        .get_mut("message")
+        .and_then(|m| m.get_mut("content"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for block in content.iter_mut() {
+        let Some(obj) = block.as_object_mut() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("thinking") {
+            continue;
+        }
+        // Skip if already processed (idempotency).
+        if obj.contains_key("contextzip_sig") {
+            continue;
+        }
+        let sig = match obj.get("signature").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+        // Never-inflate: the annotation `{"sha256":"<64 hex>","len":<N>}` serializes
+        // to ~90 bytes max. Use 100 as a conservative upper bound. Skip the drop when
+        // the annotation alone is at least as large as the original signature.
+        const SIG_ANNOTATION_OVERHEAD: usize = 100;
+        if SIG_ANNOTATION_OVERHEAD >= sig.len() {
+            continue;
+        }
+        let sha = sha256_hex(&sig);
+        let len = sig.len();
+        obj.remove("signature");
+        obj.insert(
+            "contextzip_sig".to_string(),
+            json!({"sha256": sha, "len": len}),
+        );
+        stats.signatures_dropped += 1;
+    }
+}
+
+/// MediaReference axis: replaces inlined base64 image data with a sha marker.
+///
+/// Target A: `image` blocks in `record["message"]["content"]` where
+/// `block["source"]["type"] == "base64"` and `source["data"]` is non-empty.
+///
+/// Target B: `record["toolUseResult"]["file"]["base64"]` if non-empty.
+///
+/// Never-inflate: skips if marker + annotation overhead >= original data length.
+/// Idempotent: skips blocks that already carry `contextzip_media`.
+fn replace_media_with_sha_markers(
+    record: &mut Value,
+    _cfg: &CompactConfig,
+    stats: &mut CompactStats,
+) {
+    // The sibling `contextzip_media` annotation serializes to ~120 bytes max.
+    // Used in both Target A and B never-inflate guards.
+    const MEDIA_ANNOTATION_OVERHEAD: usize = 120;
+
+    // Target A: image blocks in message.content.
+    // We need to collect indices to avoid borrow conflicts.
+    let content_len = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    for i in 0..content_len {
+        let Some(content_arr) = record
+            .get_mut("message")
+            .and_then(|m| m.get_mut("content"))
+            .and_then(Value::as_array_mut)
+        else {
+            break;
+        };
+        let Some(block) = content_arr.get_mut(i) else {
+            continue;
+        };
+        if block.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        // Idempotency: skip if already processed.
+        if block.get("contextzip_media").is_some() {
+            continue;
+        }
+        let source_type = block
+            .get("source")
+            .and_then(|s| s.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if source_type != "base64" {
+            continue;
+        }
+        let data = match block
+            .get("source")
+            .and_then(|s| s.get("data"))
+            .and_then(Value::as_str)
+        {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => continue,
+        };
+        let media_type = block
+            .get("source")
+            .and_then(|s| s.get("media_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let sha = sha256_hex(&data);
+        let n = data.len();
+        let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
+        // Never-inflate: skip if marker + annotation overhead >= original data length.
+        if marker.len() + MEDIA_ANNOTATION_OVERHEAD >= n {
+            continue;
+        }
+        let annotation = json!({"sha256": sha, "bytes": n, "media_type": media_type});
+        // Mutate source.data.
+        let Some(source) = block.get_mut("source").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        source.insert("data".to_string(), json!(marker));
+        // Set sibling contextzip_media on the block.
+        let Some(obj) = block.as_object_mut() else {
+            continue;
+        };
+        obj.insert("contextzip_media".to_string(), annotation);
+        stats.media_referenced += 1;
+    }
+
+    // Target B: toolUseResult.file.base64.
+    let Some(file_obj) = record
+        .get_mut("toolUseResult")
+        .and_then(|t| t.get_mut("file"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    // Idempotency: skip if already processed.
+    if file_obj.contains_key("contextzip_media") {
+        return;
+    }
+    let data = match file_obj.get("base64").and_then(Value::as_str) {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => return,
+    };
+    let sha = sha256_hex(&data);
+    let n = data.len();
+    let marker = format!("[contextzip: media sha256={} {} bytes]", sha, n);
+    // Never-inflate: same guard as Target A - account for annotation overhead (~120 bytes).
+    if marker.len() + MEDIA_ANNOTATION_OVERHEAD >= n {
+        return;
+    }
+    let annotation = json!({"sha256": sha, "bytes": n, "media_type": ""});
+    file_obj.insert("base64".to_string(), json!(marker));
+    file_obj.insert("contextzip_media".to_string(), annotation);
+    stats.media_referenced += 1;
+}
+
+/// SidecarDedup axis: collapses `record["toolUseResult"]` when its primary
+/// payload text is byte-equal to the `tool_result` block in
+/// `record["message"]["content"]`.
+///
+/// Extraction order for the sidecar payload:
+///   1. `toolUseResult.stdout`
+///   2. `toolUseResult.originalFile`
+///   3. `toolUseResult.content`
+///   4. `toolUseResult.file.content`
+///
+/// The message tool_result text is extracted the same way as `block_text_len`
+/// (content may be a bare string or an array of {type,text} objects).
+///
+/// Only collapses on exact byte equality AND when the payload is large enough
+/// that the replacement marker is smaller (never-inflate). Partial matches are
+/// never collapsed - only exact equality is safe; a near-match means the sidecar
+/// has data that does not exist in message.content, and dropping it would lose
+/// information.
+///
+/// Idempotent: skips if `toolUseResult.contextzip_ref` is already present.
+fn dedup_sidecar(record: &mut Value, stats: &mut CompactStats) {
+    // Idempotency: already processed.
+    if record
+        .get("toolUseResult")
+        .and_then(|t| t.get("contextzip_ref"))
+        .is_some()
+    {
+        return;
+    }
+
+    // Extract the sidecar's primary payload text and which field it came from.
+    // "file.content" is represented as ("file", true) so we know to descend.
+    let (sidecar_text, matched_field, in_file_obj): (String, &str, bool) = {
+        let Some(tur) = record.get("toolUseResult") else {
+            return;
+        };
+        if let Some(s) = tur.get("stdout").and_then(Value::as_str) {
+            (s.to_string(), "stdout", false)
+        } else if let Some(s) = tur.get("originalFile").and_then(Value::as_str) {
+            (s.to_string(), "originalFile", false)
+        } else if let Some(s) = tur.get("content").and_then(Value::as_str) {
+            (s.to_string(), "content", false)
+        } else if let Some(s) = tur
+            .get("file")
+            .and_then(|f| f.get("content"))
+            .and_then(Value::as_str)
+        {
+            (s.to_string(), "content", true)
+        } else {
+            return;
+        }
+    };
+
+    // Extract the message.content tool_result text.
+    let content_len = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    let mut tool_result_text: Option<String> = None;
+    for i in 0..content_len {
+        let block_type = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i))
+            .and_then(|b| b.get("type"))
+            .and_then(Value::as_str);
+        if block_type != Some("tool_result") {
+            continue;
+        }
+        let block = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i));
+        let text = match block.and_then(|b| b.get("content")) {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        tool_result_text = Some(text);
+        break;
+    }
+
+    let content_text = match tool_result_text {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Only collapse on exact byte equality.
+    if sidecar_text != content_text {
+        return;
+    }
+
+    let payload_len = sidecar_text.len();
+
+    // Never-inflate: the replacement object must be smaller than the payload.
+    // The replacement is ~120 chars; require payload > 120 to be conservative.
+    if payload_len <= 120 {
+        return;
+    }
+
+    // Mutate the existing toolUseResult object in place: remove ONLY the
+    // matched field and insert the ref markers. Sibling fields (stderr,
+    // interrupted, isImage, structuredPatch, etc.) are preserved.
+    if let Some(tur) = record
+        .get_mut("toolUseResult")
+        .and_then(Value::as_object_mut)
+    {
+        if in_file_obj {
+            // matched field was file.content - remove content from file sub-object
+            if let Some(file_obj) = tur.get_mut("file").and_then(Value::as_object_mut) {
+                file_obj.remove(matched_field);
+            }
+        } else {
+            tur.remove(matched_field);
+        }
+        tur.insert("contextzip_ref".to_string(), json!("message.content"));
+        tur.insert(
+            "contextzip_compressed".to_string(),
+            json!({
+                "axis": "SidecarDedup",
+                "original_chars": payload_len,
+                "replaced_field": if in_file_obj { "file.content" } else { matched_field }
+            }),
+        );
+        stats.sidecars_deduped += 1;
     }
 }
 
@@ -538,7 +889,7 @@ fn replace_with_read_ref(
 /// Shared by GrepGlobDedup (Task 6) and BashCmdDedup (Task 7).
 /// Returns false (no-op) if the generated marker would be >= original_len,
 /// mirroring recompress_bash_block's never-inflate invariant.
-pub fn replace_with_generic_ref(
+fn replace_with_generic_ref(
     block: &mut Value,
     axis: &str,
     first_id: &str,
@@ -715,6 +1066,80 @@ fn flush_repeat(last_line: &mut Option<String>, count: &mut usize) -> Option<Str
     } else {
         Some(format!("{} (×{})", line, n))
     }
+}
+
+/// McpJsonCompact axis: minifies MCP tool_result JSON payloads and unwraps
+/// double-encoded `{"result":"{...}"}` patterns.
+///
+/// If the block text parses as JSON:
+///   - Check for double-encoding: a JSON object where the `result` field is a
+///     string that itself parses as JSON. If so, unwrap to the inner value.
+///   - Re-serialize compact (no whitespace/indentation).
+///   - Never-inflate: only replace when the compacted form is strictly shorter.
+///   - Annotate with contextzip_compressed for idempotency and expand support.
+///
+/// If the text does not parse as JSON, the block is left untouched (fallback-safe).
+/// Returns true when the block was rewritten.
+fn mcp_json_compact_block(block: &mut Value, stats: &mut CompactStats) -> bool {
+    // Idempotency guard is already applied by the caller, but double-check.
+    if block.get("contextzip_compressed").is_some() {
+        return false;
+    }
+    // Only compact a single-string content payload. A multi-element content
+    // array could be split mid-token; joining it before parsing would collapse
+    // distinct elements into one and lose their structure, so fall through to
+    // the generic cap instead.
+    let original = match block.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        _ => return false,
+    };
+    if original.is_empty() {
+        return false;
+    }
+
+    // Attempt JSON parse - if it fails, leave the block untouched.
+    let parsed: Value = match serde_json::from_str(&original) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Unwrap double-encoding: {"result": "<JSON string>"} pattern.
+    // The `result` value must be a string that itself parses as JSON.
+    let unwrapped = if let Value::Object(ref obj) = parsed {
+        if obj.len() == 1 {
+            if let Some(Value::String(inner_str)) = obj.get("result") {
+                serde_json::from_str::<Value>(inner_str).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let target = unwrapped.as_ref().unwrap_or(&parsed);
+    let compacted = match serde_json::to_string(target) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Never-inflate: only replace if strictly smaller.
+    if compacted.len() >= original.len() {
+        return false;
+    }
+
+    let original_chars = original.len();
+    let compressed_chars = compacted.len();
+    block["content"] = json!([{ "type": "text", "text": compacted }]);
+    block["contextzip_compressed"] = json!({
+        "axis": "McpJsonCompact",
+        "original_chars": original_chars,
+        "compressed_chars": compressed_chars,
+    });
+    stats.mcp_results_compacted += 1;
+    true
 }
 
 fn sha256_hex(input: &str) -> String {
@@ -1263,6 +1688,393 @@ mod tests {
         assert_eq!(
             second_stats.generic_results_capped, 0,
             "second pass must not re-cap"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn signature_dropped_only_when_aggressive() {
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx_padding_to_exceed_annotation_overhead_of_one_hundred_bytes_xxxxxxxxxxx"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        // aggressive OFF -> untouched
+        let off = CompactConfig::default();
+        let (out_off, s_off) = compact_session_str(&input, &off);
+        assert!(
+            out_off.contains("AAAABBBBCCCC"),
+            "signature must survive when not aggressive"
+        );
+        assert_eq!(s_off.signatures_dropped, 0);
+
+        // aggressive ON -> dropped + annotated with sha
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out_on, s_on) = compact_session_str(&input, &on);
+        assert!(
+            !out_on.contains("AAAABBBBCCCC"),
+            "signature must be dropped when aggressive"
+        );
+        assert!(
+            out_on.contains("contextzip_sig"),
+            "must annotate the dropped signature for expand"
+        );
+        assert_eq!(s_on.signatures_dropped, 1);
+    }
+
+    #[test]
+    fn media_referenced_when_aggressive() {
+        let data = "X".repeat(5000); // stand-in base64 payload
+        let rec = json!({"type":"user","uuid":"u1","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert!(
+            !out.contains(&"X".repeat(5000)),
+            "base64 data must be replaced"
+        );
+        assert!(
+            out.contains("contextzip_media"),
+            "must annotate sha for expand"
+        );
+        assert_eq!(s.media_referenced, 1);
+
+        // never-inflate: a tiny image is left alone
+        let tiny = json!({"type":"user","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}}]}});
+        let (out2, s2) = compact_session_str(&format!("{}\n", tiny), &on);
+        assert_eq!(s2.media_referenced, 0);
+        assert!(out2.contains("\"data\":\"AA\""));
+
+        // aggressive OFF -> media left untouched
+        let off = CompactConfig::default();
+        let (out_off, s_off) = compact_session_str(&input, &off);
+        assert!(
+            out_off.contains(&"X".repeat(50)),
+            "base64 data must survive when not aggressive"
+        );
+        assert_eq!(s_off.media_referenced, 0);
+    }
+
+    #[test]
+    fn media_referenced_tool_use_result_file_base64() {
+        let data = "B".repeat(3000);
+        let rec = json!({"type":"assistant","uuid":"a1","toolUseResult":{"file":{"base64": data}}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert!(
+            !out.contains(&"B".repeat(3000)),
+            "base64 in file must be replaced"
+        );
+        assert!(out.contains("contextzip_media"), "must annotate sha");
+        assert_eq!(s.media_referenced, 1);
+    }
+
+    #[test]
+    fn media_referenced_is_idempotent() {
+        let data = "X".repeat(5000);
+        let rec = json!({"type":"user","uuid":"u1","message":{"content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(first_stats.media_referenced, 1);
+        assert_eq!(
+            second_stats.media_referenced, 0,
+            "second pass must not re-replace"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn signature_drop_is_idempotent() {
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"reasoning here","signature":"AAAABBBBCCCCDDDD_long_sig_value_xxxxxxxxxxxx_padding_to_exceed_annotation_overhead_of_one_hundred_bytes_xxxxxxxxxxx"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+
+        // First pass: drops the signature.
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        assert_eq!(first_stats.signatures_dropped, 1);
+
+        // Second pass: contextzip_sig is already present - must be a no-op.
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(
+            second_stats.signatures_dropped, 0,
+            "second pass must not re-drop"
+        );
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn sidecar_deduped_when_byte_equal_and_aggressive() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.sidecars_deduped, 1);
+        assert!(
+            out.contains("contextzip_ref"),
+            "sidecar collapses to a reference"
+        );
+        // The message.content copy is still present (only the duplicate sidecar collapses)
+        let v: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert!(v["message"]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("line one"));
+    }
+
+    #[test]
+    fn sidecar_left_intact_when_differs() {
+        let rec = json!({
+            "type":"user",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"AAA"}]},
+            "toolUseResult":{"type":"text","stdout":"DIFFERENT CONTENT ENTIRELY that is quite a bit longer than AAA"}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(
+            s.sidecars_deduped, 0,
+            "differing sidecar must be left intact"
+        );
+        assert!(out.contains("DIFFERENT CONTENT"));
+    }
+
+    #[test]
+    fn sidecar_dedup_off_when_not_aggressive() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let off = CompactConfig::default();
+        let (out, s) = compact_session_str(&input, &off);
+        assert_eq!(
+            s.sidecars_deduped, 0,
+            "must be untouched when not aggressive"
+        );
+        assert!(
+            !out.contains("contextzip_ref"),
+            "no ref when aggressive is off"
+        );
+    }
+
+    #[test]
+    fn sidecar_dedup_preserves_sibling_fields() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone(),"stderr":"some error","interrupted":false}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.sidecars_deduped, 1);
+        assert!(out.contains("contextzip_ref"), "sidecar collapsed");
+        let v: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            v["toolUseResult"]["stderr"].as_str(),
+            Some("some error"),
+            "stderr must survive sibling dedup"
+        );
+        assert_eq!(
+            v["toolUseResult"]["interrupted"].as_bool(),
+            Some(false),
+            "interrupted must survive sibling dedup"
+        );
+        // stdout (the matched field) must be gone
+        assert!(
+            v["toolUseResult"]["stdout"].is_null(),
+            "matched field must be removed"
+        );
+    }
+
+    #[test]
+    fn mcp_json_compacted_when_aggressive() {
+        // double-encoded {"result":"{...}"} with whitespace
+        let inner = r#"{  "email" : "a@b.com" ,  "team" : "Pacifico"  }"#;
+        let payload = serde_json::json!({"result": inner}).to_string();
+        let records = [
+            make_assistant_tool("m1", "mcp__sts__ping", json!({})),
+            make_user_tool_result("m1", &payload),
+        ];
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&jsonl(&records), &on);
+        assert_eq!(s.mcp_results_compacted, 1);
+        // minified: no double-space, inner unwrapped
+        assert!(!out.contains("  \"email\""));
+        // aggressive OFF -> untouched by MCP axis
+        let (out_off, s_off) = compact_session_str(&jsonl(&records), &CompactConfig::default());
+        assert_eq!(s_off.mcp_results_compacted, 0);
+        let _ = out_off; // suppress unused warning
+    }
+
+    #[test]
+    fn signature_drop_never_inflates_short_sig() {
+        // A very short signature ("abc") is shorter than the annotation overhead (~100 bytes),
+        // so dropping it would inflate the record. It must be left untouched.
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"some reasoning","signature":"abc"}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(
+            s.signatures_dropped, 0,
+            "short signature must not be dropped (would inflate)"
+        );
+        assert!(
+            out.contains("\"abc\""),
+            "short signature must be preserved intact"
+        );
+    }
+
+    #[test]
+    fn signature_drop_does_drop_long_sig() {
+        // A realistic long signature (>100 bytes) must still be dropped.
+        let long_sig = "A".repeat(200);
+        let rec = json!({"type":"assistant","uuid":"a1","message":{"content":[
+            {"type":"thinking","thinking":"some reasoning","signature": long_sig}
+        ]}});
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&input, &on);
+        assert_eq!(s.signatures_dropped, 1, "long signature must be dropped");
+        assert!(
+            !out.contains(&"A".repeat(200)),
+            "long signature must not appear in output"
+        );
+        assert!(out.contains("contextzip_sig"), "must carry annotation");
+    }
+
+    #[test]
+    fn sidecar_dedup_floor_boundary() {
+        // Payload at or below the 120-char floor must NOT be deduped.
+        let short_body = "x".repeat(120);
+        let rec_short = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": short_body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": short_body.clone()}
+        });
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (_, s_short) = compact_session_str(
+            &format!("{}\n", serde_json::to_string(&rec_short).unwrap()),
+            &on,
+        );
+        assert_eq!(
+            s_short.sidecars_deduped, 0,
+            "payload <= 120 chars must not be deduped"
+        );
+
+        // Payload clearly above the floor (200 chars) must be deduped.
+        let long_body = "y".repeat(200);
+        let rec_long = json!({
+            "type":"user","uuid":"u2",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t2","content": long_body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": long_body.clone()}
+        });
+        let (_, s_long) = compact_session_str(
+            &format!("{}\n", serde_json::to_string(&rec_long).unwrap()),
+            &on,
+        );
+        assert_eq!(
+            s_long.sidecars_deduped, 1,
+            "payload > 120 chars must be deduped"
+        );
+    }
+
+    #[test]
+    fn mcp_non_json_result_left_unchanged() {
+        let plain = "pong - server alive";
+        let records = [
+            make_assistant_tool("m1", "mcp__sts__ping", json!({})),
+            make_user_tool_result("m1", plain),
+        ];
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (out, s) = compact_session_str(&jsonl(&records), &on);
+        assert_eq!(s.mcp_results_compacted, 0);
+        assert!(
+            out.contains(plain),
+            "plain-text MCP result must be preserved"
+        );
+    }
+
+    #[test]
+    fn sidecar_dedup_is_idempotent() {
+        let body = "line one\nline two\nline three".repeat(20);
+        let rec = json!({
+            "type":"user","uuid":"u1",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content": body.clone()}]},
+            "toolUseResult":{"type":"text","stdout": body.clone()}
+        });
+        let input = format!("{}\n", serde_json::to_string(&rec).unwrap());
+        let on = CompactConfig {
+            aggressive: true,
+            ..Default::default()
+        };
+        let (first_out, first_stats) = compact_session_str(&input, &on);
+        assert_eq!(first_stats.sidecars_deduped, 1);
+        let (second_out, second_stats) = compact_session_str(&first_out, &on);
+        assert_eq!(
+            second_stats.sidecars_deduped, 0,
+            "second pass must not re-dedup"
         );
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }

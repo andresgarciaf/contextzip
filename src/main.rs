@@ -406,6 +406,12 @@ enum Commands {
         /// already have a .compressed sidecar.
         #[arg(long = "all-sessions")]
         all_sessions: bool,
+        /// Enable aggressive metadata axes (sidecar dedup, media referencing,
+        /// signature drop, MCP JSON compaction). Off by default: these touch
+        /// Claude Code internal fields and are only safe to `apply` after a
+        /// resume test. `compact` (sidecar-only) is always safe.
+        #[arg(long)]
+        aggressive: bool,
     },
 
     /// Atomic-swap a previously-compacted sidecar into place as the active session.
@@ -1743,12 +1749,13 @@ fn main() -> Result<()> {
             target,
             dry_run,
             all_sessions,
+            aggressive,
         } => {
             if all_sessions {
-                compact_cmd::run_all_sessions(dry_run, cli.verbose)?;
+                compact_cmd::run_all_sessions(dry_run, aggressive, cli.verbose)?;
             } else {
                 let target = target.expect("clap required_unless_present guards this");
-                compact_cmd::run_with_options(&target, dry_run, cli.verbose)?;
+                compact_cmd::run_with_options(&target, dry_run, aggressive, cli.verbose)?;
             }
         }
 

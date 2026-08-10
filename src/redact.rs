@@ -8,7 +8,9 @@ use regex::Regex;
 lazy_static! {
     static ref DATABRICKS_PAT: Regex = Regex::new(r"dapi[0-9a-fA-F]{32,}").unwrap();
     static ref AWS_KEY: Regex = Regex::new(r"(?:AKIA|ASIA|AROA|AIDA|AGPA)[0-9A-Z]{16}").unwrap();
-    static ref OPENAI_KEY: Regex = Regex::new(r"sk-[A-Za-z0-9_-]{20,}").unwrap();
+    // Anchored on a non-key boundary so ordinary `sk-` prefixed identifiers,
+    // paths, and branch names in a coding session are not mistaken for keys.
+    static ref OPENAI_KEY: Regex = Regex::new(r"\bsk-[A-Za-z0-9_-]{20,}").unwrap();
     static ref JWT: Regex = Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap();
     // Assembled from fragments to avoid a literal key-block shape in source.
     static ref PRIVATE_KEY: Regex = Regex::new(
