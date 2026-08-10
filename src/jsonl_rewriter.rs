@@ -517,8 +517,8 @@ fn rewrite_record(
 }
 
 /// Entry point for all metadata-rewrite axes (aggressive mode only).
-/// Each axis is a helper call; Tasks 3-4 will add more axes here.
-pub fn rewrite_record_metadata(record: &mut Value, cfg: &CompactConfig, stats: &mut CompactStats) {
+/// Each axis is a helper call.
+fn rewrite_record_metadata(record: &mut Value, cfg: &CompactConfig, stats: &mut CompactStats) {
     drop_thinking_signatures(record, stats);
     replace_media_with_sha_markers(record, cfg, stats);
     dedup_sidecar(record, stats);
@@ -1085,13 +1085,12 @@ fn mcp_json_compact_block(block: &mut Value, stats: &mut CompactStats) -> bool {
     if block.get("contextzip_compressed").is_some() {
         return false;
     }
+    // Only compact a single-string content payload. A multi-element content
+    // array could be split mid-token; joining it before parsing would collapse
+    // distinct elements into one and lose their structure, so fall through to
+    // the generic cap instead.
     let original = match block.get("content") {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|c| c.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
         _ => return false,
     };
     if original.is_empty() {
