@@ -786,6 +786,14 @@ mod tests {
         let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
         assert_eq!(stats.grepglob_results_deduped, 1);
         assert!(out.contains("GrepGlobDedup"), "missing GrepGlobDedup marker in {}", out);
+        // First result's content must survive intact.
+        assert!(out.contains("fn a"), "first Grep result content must be preserved");
+        assert!(out.contains("fn b"), "first Grep result content must be preserved");
+        // Second result's body must be replaced - original text gone from the dedup line.
+        let lines: Vec<&str> = out.lines().collect();
+        let dedup_line = lines[3];
+        assert!(!dedup_line.contains("fn a"), "second result body must be replaced, got: {}", dedup_line);
+        assert!(dedup_line.contains("GrepGlobDedup"), "second result must carry dedup marker");
     }
 
     #[test]
