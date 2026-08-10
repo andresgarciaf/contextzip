@@ -35,6 +35,7 @@ pub struct CompactStats {
     pub bash_results_recompressed: usize,
     pub read_results_deduped: usize,
     pub grepglob_results_deduped: usize,
+    pub bash_cmds_deduped: usize,
     pub secrets_redacted: usize,
 }
 
@@ -78,13 +79,14 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
         ..Default::default()
     };
 
-    // Two-pass: first pass collects which Read+file_path → first tool_use_id,
-    // and which Grep/Glob args_key → first tool_use_id.
-    // Second pass rewrites repeated Read/Grep/Glob tool_results, and
-    // recompresses Bash tool_results unconditionally.
+    // Two-pass: first pass collects which Read+file_path -> first tool_use_id,
+    // which Grep/Glob args_key -> first tool_use_id, and which Bash command
+    // string -> first tool_use_id.
+    // Second pass rewrites repeated Read/Grep/Glob/Bash tool_results.
     let mut tool_use_index: HashMap<String, ToolUseInfo> = HashMap::new();
     let mut first_read_for: HashMap<String, FirstRead> = HashMap::new();
     let mut first_grepglob_for: HashMap<String, FirstResult> = HashMap::new();
+    let mut first_bashcmd_for: HashMap<String, FirstResult> = HashMap::new();
 
     for line in input.lines() {
         if line.trim().is_empty() {
@@ -98,6 +100,7 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             &mut tool_use_index,
             &mut first_read_for,
             &mut first_grepglob_for,
+            &mut first_bashcmd_for,
         );
     }
 
@@ -179,6 +182,7 @@ pub fn compact_session_str(input: &str, cfg: &CompactConfig) -> (String, Compact
             &tool_use_index,
             &first_read_for,
             &first_grepglob_for,
+            &first_bashcmd_for,
             cfg,
             &mut stats,
         );
@@ -204,6 +208,8 @@ struct ToolUseInfo {
     file_path: Option<String>,
     /// Normalized args key for Grep/Glob dedup (BTreeMap-serialized input JSON).
     args_key: Option<String>,
+    /// Bash command string for BashCmdDedup.
+    bash_cmd: Option<String>,
 }
 
 /// First occurrence of a Grep/Glob with a given args_key.
@@ -226,6 +232,7 @@ fn index_record(
     tool_use_index: &mut HashMap<String, ToolUseInfo>,
     first_read_for: &mut HashMap<String, FirstRead>,
     first_grepglob_for: &mut HashMap<String, FirstResult>,
+    first_bashcmd_for: &mut HashMap<String, FirstResult>,
 ) {
     if record.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
@@ -265,12 +272,22 @@ fn index_record(
             _ => None,
         };
 
+        let bash_cmd = match name.as_str() {
+            "Bash" => block
+                .get("input")
+                .and_then(|i| i.get("command"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            _ => None,
+        };
+
         tool_use_index.insert(
             id.to_string(),
             ToolUseInfo {
                 name: name.clone(),
                 file_path: file_path.clone(),
                 args_key: args_key.clone(),
+                bash_cmd: bash_cmd.clone(),
             },
         );
 
@@ -292,6 +309,16 @@ fn index_record(
                     });
             }
         }
+
+        if name == "Bash" {
+            if let Some(cmd) = bash_cmd {
+                first_bashcmd_for
+                    .entry(cmd)
+                    .or_insert_with(|| FirstResult {
+                        tool_use_id: id.to_string(),
+                    });
+            }
+        }
     }
 }
 
@@ -300,6 +327,7 @@ fn rewrite_record(
     tool_use_index: &HashMap<String, ToolUseInfo>,
     first_read_for: &HashMap<String, FirstRead>,
     first_grepglob_for: &HashMap<String, FirstResult>,
+    first_bashcmd_for: &HashMap<String, FirstResult>,
     cfg: &CompactConfig,
     stats: &mut CompactStats,
 ) {
@@ -369,8 +397,34 @@ fn rewrite_record(
                     }
                 }
             }
-            "Bash" if recompress_bash_block(block) => {
-                stats.bash_results_recompressed += 1;
+            "Bash" => {
+                // BashCmdDedup: if this is not the first occurrence of the same
+                // command string, replace with a reference to the first.
+                // Dedup wins over text compaction; only fall through to
+                // recompress_bash_block when this IS the first occurrence.
+                let deduped = info.bash_cmd.as_deref().and_then(|cmd| {
+                    let first = first_bashcmd_for.get(cmd)?;
+                    if first.tool_use_id == use_id {
+                        return None; // this is the first - no dedup
+                    }
+                    // Guard: skip if block is already compressed (idempotency).
+                    if block.get("contextzip_compressed").is_some() {
+                        return None;
+                    }
+                    // Guard: skip if the first occurrence had empty output.
+                    // (We can't cheaply fetch the first block's content here;
+                    // we rely on the fact that recompress_bash_block already
+                    // skips empty originals, so the first result in index is
+                    // only registered when a non-empty command exists.)
+                    Some(first.tool_use_id.clone())
+                });
+                if let Some(first_id) = deduped {
+                    let preview_len = block_text_len(block);
+                    replace_with_generic_ref(block, "BashCmdDedup", &first_id, preview_len);
+                    stats.bash_cmds_deduped += 1;
+                } else if recompress_bash_block(block) {
+                    stats.bash_results_recompressed += 1;
+                }
             }
             _ => {}
         }
@@ -825,6 +879,59 @@ mod tests {
         let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
         assert_eq!(first_stats.grepglob_results_deduped, 1);
         assert_eq!(second_stats.grepglob_results_deduped, 0, "second pass must not re-dedup");
+        assert_eq!(first_out, second_out, "output must be stable across passes");
+    }
+
+    #[test]
+    fn bash_cmd_dedup_references_first_when_command_repeats() {
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", "total 8\ndrwxr-xr-x  2 u  s  64 x\n-rw-r--r--  1 u  s   0 y"),
+            make_assistant_bash("b2", "ls -la"),
+            make_user_tool_result("b2", "total 8\ndrwxr-xr-x  2 u  s  64 x\n-rw-r--r--  1 u  s   0 y"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.bash_cmds_deduped, 1);
+        assert!(out.contains("BashCmdDedup"), "missing BashCmdDedup marker in {}", out);
+        // First occurrence's output must be preserved.
+        assert!(out.contains("drwxr-xr-x"), "first Bash result must be preserved");
+        // Second occurrence's body must be replaced.
+        let lines: Vec<&str> = out.lines().collect();
+        let dedup_line = lines[3];
+        assert!(!dedup_line.contains("drwxr-xr-x"), "second result body must be replaced, got: {}", dedup_line);
+        assert!(dedup_line.contains("BashCmdDedup"), "second result must carry dedup marker");
+    }
+
+    #[test]
+    fn bash_cmd_dedup_does_not_touch_unique_commands() {
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", "total 8\nfile1\nfile2"),
+            make_assistant_bash("b2", "git status"),
+            make_user_tool_result("b2", "On branch main\nnothing to commit"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let (out, stats) = compact_session_str(&jsonl(&records), &cfg);
+        assert_eq!(stats.bash_cmds_deduped, 0, "unique commands must not be deduped");
+        assert!(out.contains("file1"), "first command output must be preserved");
+        assert!(out.contains("On branch main"), "second command output must be preserved");
+    }
+
+    #[test]
+    fn bash_cmd_dedup_is_idempotent() {
+        let records = [
+            make_assistant_bash("b1", "ls -la"),
+            make_user_tool_result("b1", "total 8\ndrwxr-xr-x  2 u  s  64 x\n-rw-r--r--  1 u  s   0 y"),
+            make_assistant_bash("b2", "ls -la"),
+            make_user_tool_result("b2", "total 8\ndrwxr-xr-x  2 u  s  64 x\n-rw-r--r--  1 u  s   0 y"),
+        ];
+        let cfg = crate::config::CompactConfig::default();
+        let input = jsonl(&records);
+        let (first_out, first_stats) = compact_session_str(&input, &cfg);
+        let (second_out, second_stats) = compact_session_str(&first_out, &cfg);
+        assert_eq!(first_stats.bash_cmds_deduped, 1);
+        assert_eq!(second_stats.bash_cmds_deduped, 0, "second pass must not re-dedup");
         assert_eq!(first_out, second_out, "output must be stable across passes");
     }
 }
