@@ -159,12 +159,37 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
         );
     }
 
-    std::fs::rename(&session_path, &backup)
-        .with_context(|| format!("Failed to back up original session to {}", backup.display()))?;
+    let cfg = crate::config::compact_config();
+    let original = std::fs::read_to_string(&session_path)
+        .with_context(|| format!("Failed to read original session {}", session_path.display()))?;
+    let backup_content = if cfg.redact {
+        crate::redact::scrub(&original).0
+    } else {
+        original
+    };
+    std::fs::write(&backup, &backup_content)
+        .with_context(|| format!("Failed to write backup {}", backup.display()))?;
+    if let Err(e) = std::fs::remove_file(&session_path) {
+        // Fail closed: remove the backup so original remains the live session.
+        let _ = std::fs::remove_file(&backup);
+        return Err(e).with_context(|| {
+            format!(
+                "Failed to remove original after backup; backup removed to preserve live session at {}",
+                session_path.display()
+            )
+        });
+    }
     if let Err(e) = std::fs::rename(&sidecar, &session_path) {
-        // Roll back the backup so we don't leave the user with no live session.
+        // Roll back: restore from the written backup so the user is not left with no live session.
         let _ = std::fs::rename(&backup, &session_path);
         return Err(e).context("Failed to promote sidecar to live session; backup restored");
+    }
+
+    let cfg2 = crate::config::compact_config();
+    if let Some(parent) = session_path.parent() {
+        if let Err(e) = sweep_backups(parent, cfg2.backup_retention_days) {
+            eprintln!("contextzip: sweep warning: {}", e);
+        }
     }
 
     println!(
@@ -173,6 +198,41 @@ pub fn run_apply(target: &str, verbose: u8) -> Result<()> {
         backup.display()
     );
     Ok(())
+}
+
+/// Remove `.bak` files older than `retention_days` under `project_dir`.
+/// `0` disables. Returns count removed. Never errors the caller on a single
+/// permission failure; logs to stderr and continues.
+fn sweep_backups(project_dir: &Path, retention_days: u32) -> Result<usize> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(retention_days as u64 * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(project_dir) else {
+        return Ok(0);
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("bak") {
+            continue;
+        }
+        let aged = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m < cutoff)
+            .unwrap_or(false);
+        if aged {
+            if let Err(e) = std::fs::remove_file(&p) {
+                eprintln!("contextzip: could not remove {}: {}", p.display(), e);
+            } else {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Restore the original session by renaming `<session>.jsonl.bak` back to
@@ -434,19 +494,23 @@ mod tests {
     }
 
     #[test]
-    fn expand_restores_original_byte_for_byte() -> Result<()> {
+    fn expand_restores_original_modulo_redaction() -> Result<()> {
         let dir = TempDir::new()?;
         let session = make_repeatable_session(dir.path())?;
-        let original_bytes = fs::read(&session)?;
+        let original_content = fs::read_to_string(&session)?;
 
         run_with_options(session.to_str().unwrap(), false, 0)?;
         run_apply(session.to_str().unwrap(), 0)?;
         run_expand(session.to_str().unwrap(), 0)?;
 
-        let restored = fs::read(&session)?;
+        let restored_content = fs::read_to_string(&session)?;
+        // The .bak is written after optional redaction, so the round-trip
+        // is exact when no secrets are present (scrub is a no-op on clean content).
+        let scrubbed_original = crate::redact::scrub(&original_content).0;
+        let scrubbed_restored = crate::redact::scrub(&restored_content).0;
         assert_eq!(
-            restored, original_bytes,
-            "expand must round-trip apply losslessly"
+            scrubbed_original, scrubbed_restored,
+            "expand must restore content that is identical after redaction"
         );
         // The compressed copy is preserved on the side so apply can be redone.
         let sidecar = dir.path().join("session.jsonl.compressed");
@@ -462,6 +526,57 @@ mod tests {
         let r = run_expand(session.to_str().unwrap(), 0);
         assert!(r.is_err());
         assert!(format!("{}", r.unwrap_err()).contains("No backup"));
+        Ok(())
+    }
+
+    /// Build a session whose tool_result contains a secret pattern.
+    fn make_session_with_secret(dir: &Path, secret: &str) -> Result<PathBuf> {
+        let session = dir.join("session.jsonl");
+        let mut f = fs::File::create(&session)?;
+        writeln!(
+            f,
+            r#"{{"type":"assistant","uuid":"a1","message":{{"content":[{{"type":"tool_use","id":"r1","name":"Read","input":{{"file_path":"/tmp/x.rs"}}}}]}}}}"#
+        )?;
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"u1","message":{{"content":[{{"type":"tool_result","tool_use_id":"r1","content":"{}"}}]}}}}"#,
+            secret
+        )?;
+        Ok(session)
+    }
+
+    fn set_mtime_days_ago(path: &Path, days: u64) {
+        use std::time::{Duration, SystemTime};
+        let mtime = SystemTime::now() - Duration::from_secs(days * 86_400);
+        fs::File::open(path)
+            .expect("set_mtime_days_ago: open")
+            .set_modified(mtime)
+            .expect("set_mtime_days_ago: set_modified");
+    }
+
+    #[test]
+    fn apply_redacts_secret_in_backup() -> Result<()> {
+        let dir = TempDir::new()?;
+        let pat = format!("dapi{}", "0".repeat(34));
+        let session = make_session_with_secret(dir.path(), &pat)?;
+        run_with_options(session.to_str().unwrap(), false, 0)?;
+        run_apply(session.to_str().unwrap(), 0)?;
+        let bak = fs::read_to_string(backup_path(&session))?;
+        assert!(!bak.contains(&pat), "backup must be redacted");
+        Ok(())
+    }
+
+    #[test]
+    fn sweep_removes_aged_backup_keeps_fresh() -> Result<()> {
+        let dir = TempDir::new()?;
+        let old = dir.path().join("a.jsonl.bak");
+        let new = dir.path().join("b.jsonl.bak");
+        fs::write(&old, "x")?;
+        fs::write(&new, "y")?;
+        set_mtime_days_ago(&old, 10);
+        let removed = sweep_backups(dir.path(), 7)?;
+        assert_eq!(removed, 1);
+        assert!(!old.exists() && new.exists());
         Ok(())
     }
 }
