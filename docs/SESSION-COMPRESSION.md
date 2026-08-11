@@ -93,7 +93,11 @@ ls -1S ~/.claude/projects/*/*.jsonl | head -5
 
 ## Configuration (optional)
 
-Config lives at `~/.config/contextzip/config.toml`. The `[compact]` section:
+Config lives at your platform config dir:
+- **macOS**: `~/Library/Application Support/contextzip/config.toml`
+- **Linux**: `~/.config/contextzip/config.toml`
+
+The `[compact]` section:
 
 ```toml
 [compact]

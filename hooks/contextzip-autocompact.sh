@@ -29,9 +29,13 @@ TP=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
 # nohup + & is portable across macOS and Linux (setsid is Linux-only).
 # `apply` refuses when a .bak already exists (session was applied before), so a
 # resumed-then-re-ended session is a safe no-op rather than a double-apply.
+#
+# Compaction defaults to the SAFE axes only. To enable the aggressive metadata
+# axes here, set `aggressive = true` under [compact] in
+# ~/.config/contextzip/config.toml - `compact` reads it, no flag needed.
 nohup bash -c "
   sleep 3
-  contextzip compact \"$TP\" --aggressive >/dev/null 2>&1 && \
+  contextzip compact \"$TP\" >/dev/null 2>&1 && \
   contextzip apply \"$TP\" >/dev/null 2>&1
 " >/dev/null 2>&1 < /dev/null &
 
