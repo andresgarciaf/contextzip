@@ -527,6 +527,57 @@ GOEOF
 fi
 
 # ===================
+# mypy (live-binary bench; no offline fixture possible - mypy_cmd has no stdin mode)
+# Skipped commands: aws (no creds), terraform (no subcommand + no creds),
+#   docker (daemon not running), kubectl (not installed)
+# ===================
+section "mypy"
+
+if command -v mypy &>/dev/null || python3 -m mypy --version &>/dev/null 2>&1; then
+  MYPY_DIR=$(mktemp -d)
+  cat > "$MYPY_DIR/sample.py" << 'PYEOF'
+from typing import Optional
+
+def maybe_upper(x: Optional[str]) -> str:
+    return x.upper()
+
+def bad_return(flag: bool) -> int:
+    if flag:
+        return 42
+
+def takes_int(x: int) -> None:
+    print(x)
+
+takes_int("hello")
+takes_int(3.14)
+result: int = maybe_upper("world")
+PYEOF
+  cat > "$MYPY_DIR/multi.py" << 'PYEOF'
+from typing import Dict, Optional
+import json
+
+def parse_config(path: str) -> Dict[str, str]:
+    with open(path) as f:
+        data = json.load(f)
+    return data
+
+def compute_ratio(a: int, b: int) -> float:
+    if b == 0:
+        return None
+    return a / b
+
+x: int = "not an int"
+y: str = 42
+PYEOF
+  bench "mypy" \
+    "mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true" \
+    "$CONTEXTZIP mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true"
+  rm -rf "$MYPY_DIR"
+else
+  echo "  mypy: mypy not in PATH, skipped"
+fi
+
+# ===================
 # rewrite (verify rewrite works with and without quotes)
 # ===================
 section "rewrite"

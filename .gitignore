@@ -49,3 +49,4 @@ claudedocs
 
 # npm package
 npm/node_modules/
+.isaac/
