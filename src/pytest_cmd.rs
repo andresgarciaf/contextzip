@@ -56,22 +56,22 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         .status
         .code()
         .unwrap_or(if output.status.success() { 0 } else { 1 });
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "pytest", exit_code) {
-        println!("{}\n{}", filtered, hint);
-    } else {
-        println!("{}", filtered);
-    }
-
     // Include stderr if present (import errors, etc.)
     if !stderr.trim().is_empty() {
         eprintln!("{}", stderr.trim());
     }
 
-    timer.track(
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "pytest", exit_code) {
+        format!("{filtered}\n{hint}\n")
+    } else {
+        format!("{filtered}\n")
+    };
+    timer.emit(
         &format!("pytest {}", args.join(" ")),
         &format!("contextzip pytest {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

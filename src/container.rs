@@ -695,12 +695,13 @@ pub fn run_compose_ps(verbose: u8) -> Result<()> {
     }
 
     let compressed = format_compose_ps(&structured);
-    println!("{}", compressed);
-    timer.track(
+    let compressed_out = format!("{compressed}\n");
+    timer.emit(
         "docker compose ps",
         "contextzip docker compose ps",
         &raw,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
@@ -732,13 +733,14 @@ pub fn run_compose_logs(service: Option<&str>, verbose: u8) -> Result<()> {
     }
 
     let compressed = format_compose_logs(&raw);
-    println!("{}", compressed);
+    let compressed_out = format!("{compressed}\n");
     let svc_label = service.unwrap_or("all");
-    timer.track(
+    timer.emit(
         &format!("docker compose logs {}", svc_label),
         "contextzip docker compose logs",
         &raw,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
@@ -770,13 +772,14 @@ pub fn run_compose_build(service: Option<&str>, verbose: u8) -> Result<()> {
     }
 
     let compressed = format_compose_build(&raw);
-    println!("{}", compressed);
+    let compressed_out = format!("{compressed}\n");
     let svc_label = service.unwrap_or("all");
-    timer.track(
+    timer.emit(
         &format!("docker compose build {}", svc_label),
         "contextzip docker compose build",
         &raw,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
