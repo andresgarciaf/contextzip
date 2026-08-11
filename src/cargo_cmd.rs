@@ -97,14 +97,15 @@ where
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_fn(&raw);
 
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, &format!("cargo_{}", subcommand), exit_code)
-    {
-        println!("{}\n{}", filtered, hint);
-    } else {
-        println!("{}", filtered);
-    }
+    let filtered_out =
+        if let Some(hint) = crate::tee::tee_and_hint(&raw, &format!("cargo_{}", subcommand), exit_code)
+        {
+            format!("{filtered}\n{hint}\n")
+        } else {
+            format!("{filtered}\n")
+        };
 
-    timer.track(
+    timer.emit(
         &format!("cargo {} {}", subcommand, restored_args.join(" ")),
         &format!(
             "contextzip cargo {} {}",
@@ -112,7 +113,8 @@ where
             restored_args.join(" ")
         ),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     if !output.status.success() {

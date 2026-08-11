@@ -95,8 +95,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         );
     }
 
-    print!("{}", filtered);
-    timer.track("tree", "contextzip tree", &raw, &filtered);
+    timer.emit("tree", "contextzip tree", &raw, &filtered, "cli");
 
     Ok(())
 }

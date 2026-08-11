@@ -98,13 +98,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         raw.trim().to_string()
     };
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("ruff {}", args.join(" ")),
         &format!("contextzip ruff {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

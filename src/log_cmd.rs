@@ -28,12 +28,13 @@ pub fn run_file(file: &Path, verbose: u8) -> Result<()> {
 
     let content = fs::read_to_string(file)?;
     let result = analyze_logs(&content);
-    println!("{}", result);
-    timer.track(
+    let result_out = format!("{result}\n");
+    timer.emit(
         &format!("cat {}", file.display()),
         "contextzip log",
         &content,
-        &result,
+        &result_out,
+        "cli",
     );
     Ok(())
 }
@@ -50,9 +51,8 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     }
 
     let result = analyze_logs(&content);
-    println!("{}", result);
-
-    timer.track("log (stdin)", "contextzip log (stdin)", &content, &result);
+    let result_out = format!("{result}\n");
+    timer.emit("log (stdin)", "contextzip log (stdin)", &content, &result_out, "cli");
 
     Ok(())
 }

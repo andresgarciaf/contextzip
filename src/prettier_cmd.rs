@@ -44,14 +44,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     }
 
     let filtered = filter_prettier_output(&raw);
-
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("prettier {}", args.join(" ")),
         &format!("contextzip prettier {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

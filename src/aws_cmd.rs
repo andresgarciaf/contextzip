@@ -99,22 +99,16 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
     }
 
     let filtered = match json_cmd::filter_json_string(&raw, JSON_COMPRESS_DEPTH) {
-        Ok(schema) => {
-            println!("{}", schema);
-            schema
-        }
-        Err(_) => {
-            // Fallback: print raw (maybe not JSON)
-            print!("{}", raw);
-            raw.clone()
-        }
+        Ok(schema) => format!("{schema}\n"),
+        Err(_) => raw.clone(),
     };
 
-    timer.track(
+    timer.emit(
         &format!("aws {}", full_sub),
         &format!("contextzip aws {}", full_sub),
         &raw,
         &filtered,
+        "cli",
     );
 
     Ok(())
@@ -181,14 +175,8 @@ fn run_sts_identity(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws sts get-caller-identity",
-        "contextzip aws sts get-caller-identity",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws sts get-caller-identity", "contextzip aws sts get-caller-identity", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -217,9 +205,8 @@ fn run_s3_ls(extra_args: &[String], verbose: u8) -> Result<()> {
     }
 
     let filtered = filter_s3_ls(&raw);
-    println!("{}", filtered);
-
-    timer.track("aws s3 ls", "contextzip aws s3 ls", &raw, &filtered);
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws s3 ls", "contextzip aws s3 ls", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -241,14 +228,8 @@ fn run_ec2_describe(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws ec2 describe-instances",
-        "contextzip aws ec2 describe-instances",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws ec2 describe-instances", "contextzip aws ec2 describe-instances", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -270,14 +251,8 @@ fn run_ecs_list_services(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws ecs list-services",
-        "contextzip aws ecs list-services",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws ecs list-services", "contextzip aws ecs list-services", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -299,14 +274,8 @@ fn run_ecs_describe_services(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws ecs describe-services",
-        "contextzip aws ecs describe-services",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws ecs describe-services", "contextzip aws ecs describe-services", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -329,14 +298,8 @@ fn run_rds_describe(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws rds describe-db-instances",
-        "contextzip aws rds describe-db-instances",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws rds describe-db-instances", "contextzip aws rds describe-db-instances", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -359,14 +322,8 @@ fn run_cfn_list_stacks(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws cloudformation list-stacks",
-        "contextzip aws cloudformation list-stacks",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws cloudformation list-stacks", "contextzip aws cloudformation list-stacks", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -389,14 +346,8 @@ fn run_cfn_describe_stacks(extra_args: &[String], verbose: u8) -> Result<()> {
         Some(f) => f,
         None => raw.clone(),
     };
-    println!("{}", filtered);
-
-    timer.track(
-        "aws cloudformation describe-stacks",
-        "contextzip aws cloudformation describe-stacks",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("aws cloudformation describe-stacks", "contextzip aws cloudformation describe-stacks", &raw, &filtered_out, "cli");
     Ok(())
 }
 

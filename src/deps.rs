@@ -74,8 +74,7 @@ pub fn run(path: &Path, verbose: u8) -> Result<()> {
         output.push_str(&format!("No dependency files found in {}", dir.display()));
     }
 
-    print!("{}", output);
-    timer.track("cat */deps", "contextzip deps", &raw, &output);
+    timer.emit("cat */deps", "contextzip deps", &raw, &output, "cli");
     Ok(())
 }
 

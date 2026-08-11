@@ -744,13 +744,12 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
 
         // Apply minimal filtering: strip ANSI, remove hints, empty lines
         let filtered = filter_status_with_args(&stdout);
-        print!("{}", filtered);
-
-        timer.track(
+        timer.emit(
             &format!("git status {}", args.join(" ")),
             &format!("contextzip git status {}", args.join(" ")),
             &stdout,
             &filtered,
+            "cli",
         );
 
         return Ok(());
@@ -780,16 +779,10 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
     }
 
     let formatted = format_status_output(&stdout);
-
-    println!("{}", formatted);
+    let formatted_out = format!("{formatted}\n");
 
     // Track for statistics
-    timer.track(
-        "git status",
-        "contextzip git status",
-        &raw_output,
-        &formatted,
-    );
+    timer.emit("git status", "contextzip git status", &raw_output, &formatted_out, "cli");
 
     Ok(())
 }

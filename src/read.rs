@@ -58,12 +58,13 @@ pub fn run(
     } else {
         filtered.clone()
     };
-    println!("{}", compressed);
-    timer.track(
+    let compressed_out = format!("{compressed}\n");
+    timer.emit(
         &format!("cat {}", file.display()),
         "contextzip read",
         &content,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
@@ -122,9 +123,8 @@ pub fn run_stdin(
     } else {
         filtered.clone()
     };
-    println!("{}", compressed);
-
-    timer.track("cat - (stdin)", "contextzip read -", &content, &compressed);
+    let compressed_out = format!("{compressed}\n");
+    timer.emit("cat - (stdin)", "contextzip read -", &content, &compressed_out, "cli");
     Ok(())
 }
 

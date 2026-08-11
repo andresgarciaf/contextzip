@@ -69,22 +69,22 @@ pub fn run_test(args: &[String], verbose: u8) -> Result<()> {
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_go_test_json(&stdout);
 
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_test", exit_code) {
-        println!("{}\n{}", filtered, hint);
-    } else {
-        println!("{}", filtered);
-    }
-
     // Include stderr if present (build errors, etc.)
     if !stderr.trim().is_empty() {
         eprintln!("{}", stderr.trim());
     }
 
-    timer.track(
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_test", exit_code) {
+        format!("{filtered}\n{hint}\n")
+    } else {
+        format!("{filtered}\n")
+    };
+    timer.emit(
         &format!("go test {}", args.join(" ")),
         &format!("contextzip go test {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD
@@ -123,21 +123,23 @@ pub fn run_build(args: &[String], verbose: u8) -> Result<()> {
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_go_build(&raw);
 
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_build", exit_code) {
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_build", exit_code) {
         if !filtered.is_empty() {
-            println!("{}\n{}", filtered, hint);
+            format!("{filtered}\n{hint}\n")
         } else {
-            println!("{}", hint);
+            format!("{hint}\n")
         }
     } else if !filtered.is_empty() {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    } else {
+        String::new()
+    };
+    timer.emit(
         &format!("go build {}", args.join(" ")),
         &format!("contextzip go build {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD
@@ -176,21 +178,23 @@ pub fn run_vet(args: &[String], verbose: u8) -> Result<()> {
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_go_vet(&raw);
 
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_vet", exit_code) {
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_vet", exit_code) {
         if !filtered.is_empty() {
-            println!("{}\n{}", filtered, hint);
+            format!("{filtered}\n{hint}\n")
         } else {
-            println!("{}", hint);
+            format!("{hint}\n")
         }
     } else if !filtered.is_empty() {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    } else {
+        String::new()
+    };
+    timer.emit(
         &format!("go vet {}", args.join(" ")),
         &format!("contextzip go vet {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

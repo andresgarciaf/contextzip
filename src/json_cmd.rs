@@ -46,12 +46,13 @@ pub fn run(file: &Path, max_depth: usize, verbose: u8) -> Result<()> {
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let schema = filter_json_string(&content, max_depth)?;
-    println!("{}", schema);
-    timer.track(
+    let schema_out = format!("{schema}\n");
+    timer.emit(
         &format!("cat {}", file.display()),
         "contextzip json",
         &content,
-        &schema,
+        &schema_out,
+        "cli",
     );
     Ok(())
 }
@@ -71,8 +72,8 @@ pub fn run_stdin(max_depth: usize, verbose: u8) -> Result<()> {
         .context("Failed to read from stdin")?;
 
     let schema = filter_json_string(&content, max_depth)?;
-    println!("{}", schema);
-    timer.track("cat - (stdin)", "contextzip json -", &content, &schema);
+    let schema_out = format!("{schema}\n");
+    timer.emit("cat - (stdin)", "contextzip json -", &content, &schema_out, "cli");
     Ok(())
 }
 

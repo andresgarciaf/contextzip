@@ -336,13 +336,13 @@ fn run_list(depth: usize, args: &[String], verbose: u8) -> Result<()> {
         }
     };
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("pnpm list --depth={}", depth),
         &format!("contextzip pnpm list --depth={}", depth),
         &stdout,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())
@@ -388,17 +388,17 @@ fn run_outdated(args: &[String], verbose: u8) -> Result<()> {
         }
     };
 
-    if filtered.trim().is_empty() {
-        println!("All packages up-to-date");
+    let filtered_out = if filtered.trim().is_empty() {
+        "All packages up-to-date\n".to_string()
     } else {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    };
+    timer.emit(
         "pnpm outdated",
         "contextzip pnpm outdated",
         &combined,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())
@@ -444,13 +444,13 @@ fn run_install(packages: &[String], args: &[String], verbose: u8) -> Result<()> 
     let combined = format!("{}{}", stdout, stderr);
     let filtered = filter_pnpm_install(&combined);
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("pnpm install {}", packages.join(" ")),
         &format!("contextzip pnpm install {}", packages.join(" ")),
         &combined,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())

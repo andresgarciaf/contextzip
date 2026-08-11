@@ -121,13 +121,13 @@ pub fn run(args: &[String], verbose: u8, skip_env: bool) -> Result<()> {
     } else {
         filter_npm_output(&raw)
     };
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("npm {}", args.join(" ")),
         &format!("contextzip npm {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     if !output.status.success() {

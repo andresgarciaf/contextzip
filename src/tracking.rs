@@ -1300,7 +1300,6 @@ impl TimedExecution {
     /// the choice. Enforces the never-inflate guard for every command that
     /// routes through it: a filter can never make output larger than raw.
     /// `CONTEXTZIP_NO_INFLATE_GUARD=1` disables the guard for debugging.
-    #[allow(dead_code)]
     pub fn emit(
         &self,
         original_cmd: &str,
@@ -1319,11 +1318,10 @@ impl TimedExecution {
     }
 }
 
-/// Never-inflate guard: return the filtered text only if it is strictly
-/// smaller than the raw input; otherwise return the raw input. Compared on
-/// byte length of the (already ANSI-stripped) input the filter received, so
-/// ANSI removal still counts as a win. Ties go to filtered.
-#[allow(dead_code)]
+/// Never-inflate guard: return the filtered text if it is no larger than
+/// the raw input; otherwise return the raw input. Compared on byte length
+/// of the (already ANSI-stripped) input the filter received, so ANSI
+/// removal still counts as a win. Ties go to filtered.
 pub fn choose_output<'a>(input: &'a str, filtered: &'a str) -> &'a str {
     if filtered.len() <= input.len() {
         filtered

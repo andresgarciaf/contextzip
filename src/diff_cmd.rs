@@ -23,12 +23,13 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
 
     if diff.added == 0 && diff.removed == 0 {
         compressed.push_str("[ok] Files are identical");
-        println!("{}", compressed);
-        timer.track(
+        let compressed_out = format!("{compressed}\n");
+        timer.emit(
             &format!("diff {} {}", file1.display(), file2.display()),
             "contextzip diff",
             &raw,
-            &compressed,
+            &compressed_out,
+            "cli",
         );
         return Ok(());
     }
@@ -59,12 +60,12 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
         compressed.push_str(&format!("... +{} more changes", diff.changes.len() - 50));
     }
 
-    print!("{}", compressed);
-    timer.track(
+    timer.emit(
         &format!("diff {} {}", file1.display(), file2.display()),
         "contextzip diff",
         &raw,
         &compressed,
+        "cli",
     );
     Ok(())
 }
@@ -79,13 +80,13 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
 
     // Parse unified diff format
     let condensed = condense_unified_diff(&input);
-    println!("{}", condensed);
-
-    timer.track(
+    let condensed_out = format!("{condensed}\n");
+    timer.emit(
         "diff (stdin)",
         "contextzip diff (stdin)",
         &input,
-        &condensed,
+        &condensed_out,
+        "cli",
     );
 
     Ok(())

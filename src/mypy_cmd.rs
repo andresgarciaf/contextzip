@@ -34,13 +34,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
 
     let filtered = filter_mypy_output(&clean);
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("mypy {}", args.join(" ")),
         &format!("contextzip mypy {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     if !output.status.success() {

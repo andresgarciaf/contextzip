@@ -40,13 +40,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     } else {
         filter_curl_output(&stdout)
     };
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("curl {}", args.join(" ")),
         &format!("contextzip curl {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())

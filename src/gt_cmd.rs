@@ -59,15 +59,15 @@ fn run_gt_filtered(
         filter_fn(&clean)
     };
 
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, tee_label, exit_code) {
-        println!("{}\n{}", output, hint);
-    } else {
-        println!("{}", output);
-    }
-
     if !stderr.trim().is_empty() {
         eprintln!("{}", stderr.trim());
     }
+
+    let output_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, tee_label, exit_code) {
+        format!("{output}\n{hint}\n")
+    } else {
+        format!("{output}\n")
+    };
 
     let label = if args.is_empty() {
         format!("gt {}", subcmd_str)
@@ -75,7 +75,7 @@ fn run_gt_filtered(
         format!("gt {} {}", subcmd_str, args.join(" "))
     };
     let cz_label = format!("contextzip {}", label);
-    timer.track(&label, &cz_label, &raw, &output);
+    timer.emit(&label, &cz_label, &raw, &output_out, "cli");
 
     if !cmd_output.status.success() {
         std::process::exit(exit_code);

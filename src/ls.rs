@@ -109,12 +109,12 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     } else {
         paths.join(" ")
     };
-    print!("{}", filtered);
-    timer.track(
+    timer.emit(
         &format!("ls -la {}", target_display),
         "contextzip ls",
         &raw,
         &filtered,
+        "cli",
     );
 
     Ok(())

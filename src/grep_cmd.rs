@@ -63,12 +63,13 @@ pub fn run(
             }
         }
         let msg = format!("0 matches for '{}'", pattern);
-        println!("{}", msg);
-        timer.track(
+        let msg_out = format!("{msg}\n");
+        timer.emit(
             &format!("grep -rn '{}' {}", pattern, path),
             "contextzip grep",
             &raw_output,
-            &msg,
+            &msg_out,
+            "cli",
         );
         if exit_code != 0 {
             std::process::exit(exit_code);
@@ -138,12 +139,12 @@ pub fn run(
         compressed.push_str(&format!("... +{}\n", total - shown));
     }
 
-    print!("{}", compressed);
-    timer.track(
+    timer.emit(
         &format!("grep -rn '{}' {}", pattern, path),
         "contextzip grep",
         &raw_output,
         &compressed,
+        "cli",
     );
 
     if exit_code != 0 {

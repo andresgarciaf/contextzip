@@ -125,13 +125,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         _ => raw.trim().to_string(),
     };
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("{} {}", formatter, user_args.join(" ")),
         &format!("contextzip format {} {}", formatter, user_args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

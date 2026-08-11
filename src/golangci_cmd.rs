@@ -68,18 +68,18 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
 
     let filtered = filter_golangci_json(&stdout);
 
-    println!("{}", filtered);
-
     // Include stderr if present (config errors, etc.)
     if !stderr.trim().is_empty() && verbose > 0 {
         eprintln!("{}", stderr.trim());
     }
 
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("golangci-lint {}", args.join(" ")),
         &format!("contextzip golangci-lint {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // golangci-lint: exit 0 = clean, exit 1 = lint issues, exit 2+ = config/build error

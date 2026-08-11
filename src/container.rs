@@ -54,8 +54,8 @@ fn docker_ps(_verbose: u8) -> Result<()> {
 
     if stdout.trim().is_empty() {
         compressed.push_str("[docker] 0 containers");
-        println!("{}", compressed);
-        timer.track("docker ps", "contextzip docker ps", &raw, &compressed);
+        let compressed_out = format!("{compressed}\n");
+        timer.emit("docker ps", "contextzip docker ps", &raw, &compressed_out, "cli");
         return Ok(());
     }
 
@@ -88,8 +88,7 @@ fn docker_ps(_verbose: u8) -> Result<()> {
         compressed.push_str(&format!("  ... +{} more", count - 15));
     }
 
-    print!("{}", compressed);
-    timer.track("docker ps", "contextzip docker ps", &raw, &compressed);
+    timer.emit("docker ps", "contextzip docker ps", &raw, &compressed, "cli");
     Ok(())
 }
 
@@ -120,12 +119,13 @@ fn docker_images(_verbose: u8) -> Result<()> {
 
     if lines.is_empty() {
         compressed.push_str("[docker] 0 images");
-        println!("{}", compressed);
-        timer.track(
+        let compressed_out = format!("{compressed}\n");
+        timer.emit(
             "docker images",
             "contextzip docker images",
             &raw,
-            &compressed,
+            &compressed_out,
+            "cli",
         );
         return Ok(());
     }
@@ -174,12 +174,12 @@ fn docker_images(_verbose: u8) -> Result<()> {
         compressed.push_str(&format!("  ... +{} more", lines.len() - 15));
     }
 
-    print!("{}", compressed);
-    timer.track(
+    timer.emit(
         "docker images",
         "contextzip docker images",
         &raw,
         &compressed,
+        "cli",
     );
     Ok(())
 }
@@ -217,12 +217,13 @@ fn docker_logs(args: &[String], _verbose: u8) -> Result<()> {
 
     let analyzed = crate::log_cmd::run_stdin_str(&raw);
     let compressed = format!("[docker] Logs for {}:\n{}", container, analyzed);
-    println!("{}", compressed);
-    timer.track(
+    let compressed_out = format!("{compressed}\n");
+    timer.emit(
         &format!("docker logs {}", container),
         "contextzip docker logs",
         &raw,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
@@ -253,12 +254,13 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
         Ok(v) => v,
         Err(_) => {
             compressed.push_str("No pods found");
-            println!("{}", compressed);
-            timer.track(
+            let compressed_out = format!("{compressed}\n");
+            timer.emit(
                 "kubectl get pods",
                 "contextzip kubectl pods",
                 &raw,
-                &compressed,
+                &compressed_out,
+                "cli",
             );
             return Ok(());
         }
@@ -266,12 +268,13 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
 
     let Some(pods) = json["items"].as_array().filter(|a| !a.is_empty()) else {
         compressed.push_str("No pods found");
-        println!("{}", compressed);
-        timer.track(
+        let compressed_out = format!("{compressed}\n");
+        timer.emit(
             "kubectl get pods",
             "contextzip kubectl pods",
             &raw,
-            &compressed,
+            &compressed_out,
+            "cli",
         );
         return Ok(());
     };
@@ -339,12 +342,12 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
         }
     }
 
-    print!("{}", compressed);
-    timer.track(
+    timer.emit(
         "kubectl get pods",
         "contextzip kubectl pods",
         &raw,
         &compressed,
+        "cli",
     );
     Ok(())
 }
@@ -375,12 +378,13 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
         Ok(v) => v,
         Err(_) => {
             compressed.push_str("No services found");
-            println!("{}", compressed);
-            timer.track(
+            let compressed_out = format!("{compressed}\n");
+            timer.emit(
                 "kubectl get svc",
                 "contextzip kubectl svc",
                 &raw,
-                &compressed,
+                &compressed_out,
+                "cli",
             );
             return Ok(());
         }
@@ -388,12 +392,13 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
 
     let Some(services) = json["items"].as_array().filter(|a| !a.is_empty()) else {
         compressed.push_str("No services found");
-        println!("{}", compressed);
-        timer.track(
+        let compressed_out = format!("{compressed}\n");
+        timer.emit(
             "kubectl get svc",
             "contextzip kubectl svc",
             &raw,
-            &compressed,
+            &compressed_out,
+            "cli",
         );
         return Ok(());
     };
@@ -434,12 +439,12 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
         compressed.push_str(&format!("  ... +{} more", services.len() - 15));
     }
 
-    print!("{}", compressed);
-    timer.track(
+    timer.emit(
         "kubectl get svc",
         "contextzip kubectl svc",
         &raw,
         &compressed,
+        "cli",
     );
     Ok(())
 }
@@ -478,12 +483,13 @@ fn kubectl_logs(args: &[String], _verbose: u8) -> Result<()> {
 
     let analyzed = crate::log_cmd::run_stdin_str(&raw);
     let compressed = format!("Logs for {}:\n{}", pod, analyzed);
-    println!("{}", compressed);
-    timer.track(
+    let compressed_out = format!("{compressed}\n");
+    timer.emit(
         &format!("kubectl logs {}", pod),
         "contextzip kubectl logs",
         &raw,
-        &compressed,
+        &compressed_out,
+        "cli",
     );
     Ok(())
 }
