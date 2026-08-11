@@ -33,10 +33,12 @@ TP=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
 # Compaction defaults to the SAFE axes only. To enable the aggressive metadata
 # axes here, set `aggressive = true` under [compact] in
 # ~/.config/contextzip/config.toml - `compact` reads it, no flag needed.
-nohup bash -c "
+# $TP is passed as a positional arg ($1), never interpolated into the script
+# string, so a path containing shell metacharacters cannot be parsed as code.
+nohup bash -c '
   sleep 3
-  contextzip compact \"$TP\" >/dev/null 2>&1 && \
-  contextzip apply \"$TP\" >/dev/null 2>&1
-" >/dev/null 2>&1 < /dev/null &
+  contextzip compact "$1" >/dev/null 2>&1 && \
+  contextzip apply "$1" >/dev/null 2>&1
+' _ "$TP" >/dev/null 2>&1 < /dev/null &
 
 exit 0
