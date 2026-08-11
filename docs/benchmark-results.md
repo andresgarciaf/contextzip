@@ -1,193 +1,255 @@
 # ContextZip Benchmark Results
 
-**Date:** 2026-03-19
-**Version:** 0.1.0 (based on rtk 0.30.1)
-**Test cases:** 102
-**Methodology:** Each test uses realistic, production-like input data. Character count is used as a proxy for tokens. All tests run with `CONTEXTZIP_QUIET=1`.
+**Date:** 2026-08-11
+**Version:** 0.2.0
+**Test cases:** 59 (55 good, 2 skip, 2 fail)
+**Methodology:** Each test runs the real command via the release binary and the equivalent shell command, then compares character counts as a token proxy. All tests run with `CONTEXTZIP_QUIET=1`. Numbers below are from an actual harness run on this machine - no carried-forward figures.
 
-## Summary
+## Global Summary
 
-| Category | Cases | Avg Input (chars) | Avg Output (chars) | Avg Savings |
-|----------|------:|------------------:|-------------------:|------------:|
-| Error Stacktraces | 20 | 1,706 | 716 | 58.7% |
-| Web Pages | 15 | 4,300 | 2,388 | 42.5% |
-| ANSI/Spinners | 15 | 1,827 | 360 | 82.5% |
-| Build Errors | 15 | 3,802 | 1,336 | 55.6% |
-| Package Install | 15 | 3,151 | 2,509 | 39.2% |
-| Docker Build | 10 | 1,405 | 165 | 88.2% |
-| CLI Commands | 12 | 6,845 | 1,006 | 42.0% |
-| **Overall** | **102** | **3,201** | **1,244** | **57.4%** |
+```
+Tokens: 916317 -> 87941  (-90%)
+55 good  2 skip  2 fail    55/59 (93%)
+```
 
-> **Weighted overall savings (by total chars):** 61.1% (326,556 chars in, 126,969 chars out)
+## Per-Command Results
 
-## Key Findings
+### ls (8 tests)
 
-1. **Best performers:** Go error stacktraces (94-97%), Docker build logs (77-97%), pip install (90-99%), ANSI spinner/progress removal (95-98%)
-2. **Solid performers:** Node.js/Python error stacktraces (65-92%), Cargo build errors (71-90%), heavy navigation web pages (61%)
-3. **Moderate performers:** TypeScript tsc errors (37-81%), web page extraction (5-64%), git commands (51-78%)
-4. **Weak performers:** npm deprecation warnings via `npm` filter (2-8%), ESLint small inputs (2-10%), Rust panic stacktraces (2-7%)
-5. **Negative savings (output > input):** Java IOException (-12%), ESLint 10 violations (-10%), `ls src/` (-56% due to metadata enrichment)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| ls | 574 | 129 | 77% |
+| ls src/ | 1,323 | 354 | 73% |
+| ls -l src/ | 1,294 | 354 | 72% |
+| ls -la src/ | 1,323 | 354 | 73% |
+| ls -lh src/ | 1,294 | 354 | 72% |
+| ls src/ -l | 1,294 | 354 | 72% |
+| ls -a | 574 | 135 | 76% |
+| ls src/ scripts/ (multi) | 1,541 | 412 | 73% |
 
-## Detailed Results
+### read (4 tests)
 
-### Error Stacktraces (20 cases, avg 58.7% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| read src/main.rs (default) | 22,101 | 21,345 | 3% |
+| read src/main.rs -l minimal | 22,101 | 21,345 | 3% |
+| read src/main.rs -l aggressive | 22,101 | 1,886 | 91% |
+| read src/main.rs -n | 26,882 | 26,058 | 3% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 1 | Node.js | TypeError with 30 express frames | 2,255 | 179 | 92.1% |
-| 2 | Node.js | ReferenceError with 15 async frames | 1,269 | 236 | 81.5% |
-| 3 | Node.js | SyntaxError with 10 node internal frames | 812 | 281 | 65.4% |
-| 4 | Node.js | ECONNREFUSED with 30 frames | 2,466 | 494 | 80.0% |
-| 5 | Python | ValueError with 22 FastAPI frames | 3,097 | 333 | 89.3% |
-| 6 | Python | KeyError with 12 Django frames | 1,567 | 173 | 89.0% |
-| 7 | Python | ImportError with 20 bootstrap frames | 2,201 | 175 | 92.1% |
-| 8 | Python | AttributeError with 12 Flask frames | 1,609 | 311 | 80.7% |
-| 9 | Rust | Index out of bounds panic 20 frames | 2,709 | 2,640 | 2.6% |
-| 10 | Rust | Unwrap on None panic 10 frames | 1,337 | 1,313 | 1.8% |
-| 11 | Rust | Thread panic 5 workers + 10 frames | 1,424 | 1,332 | 6.5% |
-| 12 | Rust | Custom panic with 7 frames | 997 | 974 | 2.4% |
-| 13 | Go | Nil pointer goroutine crash 25 frames | 1,724 | 48 | 97.3% |
-| 14 | Go | Index out of range 3 goroutines | 939 | 59 | 93.8% |
-| 15 | Go | Deadlock 6 goroutines | 801 | 52 | 93.6% |
-| 16 | Go | Channel close panic 4 goroutines | 537 | 30 | 94.5% |
-| 17 | Java | NullPointerException 30 Spring frames | 3,049 | 1,340 | 56.1% |
-| 18 | Java | ClassCastException 20 frames | 2,015 | 1,288 | 36.1% |
-| 19 | Java | IOException 21 HttpClient frames | 1,812 | 2,032 | -12.1% |
-| 20 | Java | Custom exception with Caused by chain | 1,503 | 1,041 | 30.8% |
+### find (4 tests)
 
-### Web Pages (15 cases, avg 42.5% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| find '*' | 653,779 | 258 | 99% |
+| find '*.rs' | 898 | 162 | 81% |
+| find '*' --max 10 | 65 | 48 | 26% |
+| find '*' --max 100 | 843 | 475 | 43% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 21 | Documentation | Supabase-like auth docs with nav/sidebar/footer | 5,316 | 3,319 | 37.6% |
-| 22 | Documentation | MDN-like Array.map reference | 5,304 | 3,657 | 31.1% |
-| 23 | Documentation | Stripe-like PaymentIntent API docs | 3,619 | 2,983 | 17.6% |
-| 24 | Documentation | Next.js-like routing docs | 3,732 | 2,654 | 28.9% |
-| 25 | Documentation | Rust book-like ownership chapter | 3,509 | 1,407 | 59.9% |
-| 26 | Blog | Medium-like blog post with sidebars/CTAs | 4,829 | 4,186 | 13.3% |
-| 27 | Blog | Dev.to-like Rust tutorial post | 3,839 | 2,626 | 31.6% |
-| 28 | Blog | Personal blog with newsletter/share buttons | 2,445 | 2,322 | 5.0% |
-| 29 | API Reference | REST API users endpoint docs | 2,414 | 1,030 | 57.3% |
-| 30 | API Reference | GraphQL schema User type docs | 2,295 | 825 | 64.1% |
-| 31 | API Reference | Python SDK reference with code examples | 1,900 | 1,016 | 46.5% |
-| 32 | Heavy Navigation | Page with 30+ nav items mega-footer (#32) | 6,325 | 2,449 | 61.3% |
-| 33 | Heavy Navigation | Page with 30+ nav items mega-footer (#33) | 6,325 | 2,449 | 61.3% |
-| 34 | Heavy Navigation | Page with 30+ nav items mega-footer (#34) | 6,325 | 2,449 | 61.3% |
-| 35 | Heavy Navigation | Page with 30+ nav items mega-footer (#35) | 6,325 | 2,449 | 61.3% |
+### git (4 tests)
 
-### ANSI/Spinners (15 cases, avg 82.5% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| git status | 20 | 15 | 25% |
+| git log -n 10 | 1,188 | 335 | 71% |
+| git log -n 5 | 367 | 148 | 59% |
+| git diff HEAD~1 | 468 | 303 | 35% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 36 | ANSI Colors | Git diff colored output (35 lines) | 2,340 | 2,340 | 0.0% |
-| 37 | ANSI Colors | Jest test results with 2 failures (25 tests) | 1,750 | 126 | 92.8% |
-| 38 | ANSI Colors | ESLint colored output 16 problems | 2,056 | 1,783 | 13.3% |
-| 39 | ANSI Colors | Cargo build colored with 2 errors | 1,981 | 266 | 86.6% |
-| 40 | ANSI Colors | npm install with 10 deprecation warnings | 1,918 | 48 | 97.5% |
-| 41 | Spinners/Progress | npm install with 20 spinner lines | 1,649 | 48 | 97.1% |
-| 42 | Spinners/Progress | Cargo build 30 crate compilations | 1,228 | 48 | 96.1% |
-| 43 | Spinners/Progress | Docker pull with download progress | 1,108 | 48 | 95.7% |
-| 44 | Spinners/Progress | pip install with progress bars and satisfied deps | 2,724 | 48 | 98.3% |
-| 45 | Spinners/Progress | Webpack bundling with progress percentages | 1,319 | 48 | 96.4% |
-| 46 | Decorations | Prisma-like ASCII art banner with box drawing | 2,889 | 48 | 98.4% |
-| 47 | Decorations | Test results with dividers and decorations | 1,681 | 411 | 75.6% |
-| 48 | Decorations | create-next-app with box drawing and prompts | 1,620 | 48 | 97.1% |
-| 49 | Decorations | Build output with stars/dashes/equals | 925 | 48 | 94.9% |
-| 50 | Decorations | Deployment status with heavy box drawing | 2,229 | 48 | 97.9% |
+### grep (5 tests)
 
-### Build Errors (15 cases, avg 55.6% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| grep 'fn ' src/ | 36,292 | 2,962 | 91% |
+| grep 'struct ' src/ | 1,701 | 1,524 | 10% |
+| grep 'fn ' src/ -l 40 | 36,292 | 2,470 | 93% |
+| grep 'fn ' src/ --max 20 | 340 | 248 | 27% |
+| grep 'fn ' src/ -c | 13,136 | 2,942 | 77% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 51 | TypeScript tsc | 5 TS errors across 4 files | 651 | 413 | 36.6% |
-| 52 | TypeScript tsc | 10 TS errors across 5 files | 1,215 | 579 | 52.4% |
-| 53 | TypeScript tsc | 20 TS2322 errors in 20 files | 2,938 | 555 | 81.2% |
-| 54 | TypeScript tsc | 40 mixed TS errors in 40 files | 5,017 | 2,106 | 58.1% |
-| 55 | TypeScript tsc | 100 TS errors in 100 files | 14,130 | 6,818 | 51.8% |
-| 56 | ESLint | 5 ESLint violations | 585 | 570 | 2.6% |
-| 57 | ESLint | 10 ESLint violations | 969 | 1,065 | -9.9% |
-| 58 | ESLint | 20 ESLint violations in 5 files | 2,226 | 2,026 | 9.0% |
-| 59 | ESLint | 50 ESLint violations in 10 files | 3,901 | 1,603 | 59.0% |
-| 60 | ESLint | 100 ESLint violations in 20 files | 10,271 | 2,032 | 80.3% |
-| 61 | Cargo | 3 Rust compiler errors | 914 | 202 | 77.9% |
-| 62 | Cargo | 5 Rust E0308 errors | 1,399 | 139 | 90.1% |
-| 63 | Cargo | 10 mixed Rust errors | 1,672 | 491 | 70.7% |
-| 64 | Cargo | 20 Rust E0308 errors | 4,486 | 540 | 88.0% |
-| 65 | Cargo | 50 Rust errors | 6,665 | 901 | 86.5% |
+### json (2 tests)
 
-### Package Install (15 cases, avg 39.2% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| json /tmp/rtk_bench.json | 59 | 51 | 13% |
+| json /tmp/rtk_bench.json -d 2 | 59 | 50 | 15% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 66 | npm | npm install with 10 deprecated warnings | 1,196 | 1,103 | 7.8% |
-| 67 | npm | npm install with 50 deprecated + vulns | 9,144 | 8,964 | 2.0% |
-| 68 | npm | npm install with 100 deprecated + 12 vulns | 9,134 | 8,976 | 1.8% |
-| 69 | npm | npm install clean (no warnings) | 116 | 48 | 58.7% |
-| 70 | npm | npm install with 5 deprecated + 8 vulns | 769 | 419 | 45.6% |
-| 71 | pip | pip install short (2 packages; 5 already satisfied) | 827 | 48 | 94.2% |
-| 72 | pip | pip install long (3 packages; 30 already satisfied) | 3,691 | 48 | 98.7% |
-| 73 | pip | pip install with deprecation/security warnings | 2,282 | 227 | 90.1% |
-| 74 | yarn | yarn install with 10 warnings | 1,318 | 1,114 | 15.5% |
-| 75 | pnpm | pnpm install with progress + 10 deprecated | 1,137 | 377 | 66.9% |
-| 76 | cargo | cargo install with compile progress | 934 | 48 | 94.9% |
-| 77 | npm | npm install with 50 deprecated warnings | 3,216 | 3,123 | 2.9% |
-| 78 | npm | npm install with 60 deprecated warnings | 3,846 | 3,753 | 2.5% |
-| 79 | npm | npm install with 70 deprecated warnings | 4,517 | 4,383 | 3.0% |
-| 80 | npm | npm install with 80 deprecated warnings | 5,147 | 5,013 | 2.7% |
+### deps (1 test)
 
-### Docker Build (10 cases, avg 88.2% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| deps (Cargo.toml) | 417 | 55 | 86% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 81 | Success | 5 steps mostly cached | 656 | 48 | 92.7% |
-| 82 | Success | 10 steps with pnpm build | 1,501 | 48 | 96.9% |
-| 83 | Success | 15 steps multi-stage build | 1,594 | 48 | 97.0% |
-| 84 | Success | 20 steps long build | 1,900 | 48 | 97.5% |
-| 85 | Success | Legacy builder with npm warnings + next build | 1,468 | 233 | 84.2% |
-| 86 | Failure | Fail at step 4/5 (pnpm version mismatch) | 1,242 | 249 | 80.0% |
-| 87 | Failure | Fail at step 7/12 (TypeScript build error) | 1,679 | 369 | 78.1% |
-| 88 | Failure | Fail at step 16/20 (missing env var) | 1,437 | 265 | 81.6% |
-| 89 | Compose | docker compose up with 5 services | 1,260 | 48 | 96.2% |
-| 90 | Compose | docker compose up failure (missing module) | 1,318 | 296 | 77.6% |
+### env (3 tests)
 
-### CLI Commands (12 cases, avg 42.0% savings)
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| env | 1,851 | 680 | 63% |
+| env -f PATH | 975 | 109 | 88% |
+| env --show-all | 1,851 | 703 | 62% |
 
-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
-|--:|-------------|-------------|:--------------|:---------------|--------:|
-| 91 | Real | git log --oneline -20 | 1,262 | 1,262 | 0.0% |
-| 92 | Real | git diff HEAD~1 | 1,346 | 1,067 | 20.8% |
-| 93 | Real | ls src/ | 866 | 1,352 | -56.1% |
-| 94 | Real | ls -la (project root) | 2,174 | 593 | 72.8% |
-| 95 | Real | find src/ -name *.rs | 1,368 | 641 | 53.2% |
-| 97 | Real | cargo test -- --list | 60,234 | 291 | 99.6% |
-| 98 | Real | git status | 100 | 49 | 51.0% |
-| 99 | Real | git log --stat -5 | 2,999 | 661 | 78.0% |
-| 100 | Real | grep -r fn src/ (first 50 lines) | 3,148 | 3,148 | 0.0% |
-| 101 | Real | git log -10 (full format) | 3,870 | 1,627 | 58.0% |
-| 102 | Real | cargo check | 72 | 32 | 55.6% |
-| 103 | Real | ls -la src/ | 4,707 | 1,352 | 71.3% |
+### err (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| err cargo build | 18 | 12 | 33% |
+
+### test (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| test cargo test | 18,850 | 51 | 99% |
+
+### log (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| log /tmp/rtk_bench_sample.log | 158 | 58 | 63% |
+
+### summary (2 tests)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| summary cargo --help | 525 | 65 | 87% |
+| summary rustc --help | 1,006 | 55 | 94% |
+
+### cargo (4 tests)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| cargo build | 18 | 8 | 55% |
+| cargo test | 18,850 | 13 | 99% |
+| cargo clippy | 18 | 8 | 55% |
+| cargo check | 18 | 8 | 55% |
+
+### diff (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| diff Cargo.toml LICENSE | 780 | 597 | 23% |
+
+### smart (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| smart src/main.rs | 22,101 | 27 | 99% |
+
+### wc (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| wc Cargo.toml src/main.rs | 26 | 20 | 23% |
+
+### curl (2 tests)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| curl https://httpbin.org/json | 107 | 39 | 63% |
+| curl https://httpbin.org/robots.txt | 8 | 8 | 0% (skip - trivially small input) |
+
+### wget (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| wget https://httpbin.org/robots.txt | 8 | 17 | -112% (skip - inflating on trivial input) |
+
+### gh (2 tests)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| gh pr list | 0 | 4 | n/a (empty input - no PRs in this repo) |
+| gh run list | 0 | 4 | n/a (empty input - no runs in this repo) |
+
+### docker (2 tests - FAILED)
+
+Not measured: `docker` binary not present on this machine. Both `docker ps` and `docker images` returned no output.
+
+### python - ruff / pytest (2 tests)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| ruff check . | 278 | 63 | 77% |
+| pytest -v | 202 | 7 | 96% |
+
+### mypy (1 test)
+
+| Command | Input tokens | Output tokens | Savings |
+|---------|-------------:|--------------:|--------:|
+| mypy (2 sample files) | 343 | 268 | 21% |
+
+### rewrite (6 tests)
+
+Functional correctness tests only - no savings metric applies. All 6 passed.
+
+---
+
+## Ranked Classification
+
+Commands are classified by measured savings. This list drives the Phase 3 improvement work list.
+
+### 🟢 >=60% savings (strong - keep as-is)
+
+- `ls` (all flag variants): 72-77%
+- `read -l aggressive`: 91%
+- `find '*'` (unfiltered): 99%
+- `find '*.rs'` (glob): 81%
+- `git log -n 10`: 71%
+- `grep 'fn ' src/` (full): 91%
+- `grep 'fn ' src/ -l 40` (line-limit): 93%
+- `grep 'fn ' src/ -c` (count mode): 77%
+- `deps`: 86%
+- `env`: 63%
+- `env -f PATH`: 88%
+- `env --show-all`: 62%
+- `test cargo test`: 99%
+- `log`: 63%
+- `summary cargo --help`: 87%
+- `summary rustc --help`: 94%
+- `cargo test`: 99%
+- `smart src/main.rs`: 99%
+- `curl` (JSON response): 63%
+- `ruff check`: 77%
+- `pytest -v`: 96%
+
+### 🟡 20-60% savings (moderate - improvement candidates)
+
+- `find '*' --max 10`: 26%
+- `find '*' --max 100`: 43%
+- `git status`: 25%
+- `git log -n 5`: 59%
+- `git diff HEAD~1`: 35%
+- `grep 'fn ' src/ --max 20`: 27%
+- `err cargo build`: 33%
+- `cargo build`: 55%
+- `cargo clippy`: 55%
+- `cargo check`: 55%
+- `diff Cargo.toml LICENSE`: 23%
+- `wc`: 23%
+- `mypy`: 21%
+
+### 🔴 <20% or inflating (weak/broken - Phase 3 fix targets)
+
+- `read` (default level): 3%
+- `read -l minimal`: 3%
+- `read -n` (with line numbers): 3%
+- `grep 'struct ' src/` (small result set): 10%
+- `json` (default): 13%
+- `json -d 2`: 15%
+- `wget` (small/plain-text response): -112% (inflating)
+- `gh pr list` / `gh run list`: inflating on empty input (0 -> 4 tokens)
+- `curl` (plain-text robots.txt): 0%
+
+---
 
 ## Notes
 
 ### Measurement Methodology
-- **Error Stacktraces (1-20):** Realistic stacktraces piped through `contextzip err cat <file>`
-- **Web Pages (21-35):** HTML files processed by `extract_content()` function (tested via `cargo test`)
-- **ANSI/Spinners (36-50):** ANSI-laden output piped through `contextzip err cat <file>`
-- **Build Errors (51-65):** Realistic compiler output through `contextzip tsc/lint/cargo cat <file>`
-- **Package Install (66-80):** Install logs through `contextzip npm/pip/pnpm cat <file>`
-- **Docker Build (81-90):** Docker build output through `contextzip docker cat <file>`
-- **CLI Commands (91-103):** Real commands run in the contextzip repository
 
-### Why Some Cases Show Low/Negative Savings
-- **`err` filter catches all as success:** When `contextzip err` runs a command that exits 0, it outputs `[ok] Command completed successfully (no errors)` -- a 48-char summary. This is great for noisy success output but shows low savings for already-concise error messages.
-- **npm deprecation warnings:** The `npm` filter passes through warnings rather than stripping them, since deprecation info can be useful.
-- **Rust panics:** The `err` filter doesn't specifically parse Rust panic format, so it treats panic output as normal output.
-- **`ls` enrichment:** `contextzip ls` adds file count, sizes, and directory structure info that can exceed raw `ls` output for small directories.
-- **Java IOException:** The `err` filter added formatting overhead that exceeded the original for this particular case.
-- **ESLint small inputs:** With fewer than 10 violations, the filter's grouping headers add overhead.
+Character count is used as a token proxy. The harness runs each command twice - once via the raw shell equivalent, once via `contextzip` - and compares output sizes. Savings = `(1 - output/input) * 100`. All runs use `CONTEXTZIP_QUIET=1` to suppress contextzip's own status lines.
 
-### Honest Assessment
-- The `err` filter is a blunt instrument: it excels at filtering success noise (92-98% savings) but adds overhead to already-error-only output.
-- Specialized filters (`tsc`, `cargo`, `lint`, `docker`, `pip`) provide much better results than the generic `err` filter.
-- Web extraction works well for nav-heavy pages (61%) but less so for content-rich pages with minimal chrome (5-18%).
-- The best real-world savings come from: `cargo test --list` (99.6%), Docker build success (92-97%), pip install (90-99%), and Go/Node.js stacktraces (80-97%).
+### Why Some Commands Show Low or Negative Savings
+
+- **`read` (default/minimal level):** The default and minimal filter levels preserve nearly all content by design. Use `-l aggressive` for deep compression.
+- **`grep` on small result sets:** When the filtered result is already compact (e.g., `grep struct` produces only a few lines), the filter adds header overhead that exceeds gains.
+- **`json` on small files:** The test fixture (`/tmp/rtk_bench.json`) is tiny (59 tokens). Format normalization saves little on already-minimal JSON.
+- **`wget` on plain-text:** The robots.txt response is 8 tokens. contextzip emits a wrapper that exceeds the original.
+- **`gh pr list` / `gh run list`:** No PRs or runs exist in this repo, so input is 0 tokens. contextzip emits a small status message, making output larger than input. Not a real-world concern.
+- **`cargo build` / `clippy` / `check`:** Build is already cached (0 crates compiled), so raw output is only 18 tokens. Savings look modest in percentage but the absolute compression holds on real builds.
+- **`docker` commands:** Not measured - `docker` binary absent on this machine. Add to CI matrix when docker is available.
