@@ -1,0 +1,2478 @@
+diff --git a/.gitignore b/.gitignore
+index 72ecee8..c5d6e5e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -49,3 +49,4 @@ claudedocs
+ 
+ # npm package
+ npm/node_modules/
++.isaac/
+diff --git a/docs/benchmark-results.md b/docs/benchmark-results.md
+index dee92ab..135b0cf 100644
+--- a/docs/benchmark-results.md
++++ b/docs/benchmark-results.md
+@@ -1,193 +1,255 @@
+ # ContextZip Benchmark Results
+ 
+-**Date:** 2026-03-19
+-**Version:** 0.1.0 (based on rtk 0.30.1)
+-**Test cases:** 102
+-**Methodology:** Each test uses realistic, production-like input data. Character count is used as a proxy for tokens. All tests run with `CONTEXTZIP_QUIET=1`.
+-
+-## Summary
+-
+-| Category | Cases | Avg Input (chars) | Avg Output (chars) | Avg Savings |
+-|----------|------:|------------------:|-------------------:|------------:|
+-| Error Stacktraces | 20 | 1,706 | 716 | 58.7% |
+-| Web Pages | 15 | 4,300 | 2,388 | 42.5% |
+-| ANSI/Spinners | 15 | 1,827 | 360 | 82.5% |
+-| Build Errors | 15 | 3,802 | 1,336 | 55.6% |
+-| Package Install | 15 | 3,151 | 2,509 | 39.2% |
+-| Docker Build | 10 | 1,405 | 165 | 88.2% |
+-| CLI Commands | 12 | 6,845 | 1,006 | 42.0% |
+-| **Overall** | **102** | **3,201** | **1,244** | **57.4%** |
+-
+-> **Weighted overall savings (by total chars):** 61.1% (326,556 chars in, 126,969 chars out)
+-
+-## Key Findings
+-
+-1. **Best performers:** Go error stacktraces (94-97%), Docker build logs (77-97%), pip install (90-99%), ANSI spinner/progress removal (95-98%)
+-2. **Solid performers:** Node.js/Python error stacktraces (65-92%), Cargo build errors (71-90%), heavy navigation web pages (61%)
+-3. **Moderate performers:** TypeScript tsc errors (37-81%), web page extraction (5-64%), git commands (51-78%)
+-4. **Weak performers:** npm deprecation warnings via `npm` filter (2-8%), ESLint small inputs (2-10%), Rust panic stacktraces (2-7%)
+-5. **Negative savings (output > input):** Java IOException (-12%), ESLint 10 violations (-10%), `ls src/` (-56% due to metadata enrichment)
+-
+-## Detailed Results
+-
+-### Error Stacktraces (20 cases, avg 58.7% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 1 | Node.js | TypeError with 30 express frames | 2,255 | 179 | 92.1% |
+-| 2 | Node.js | ReferenceError with 15 async frames | 1,269 | 236 | 81.5% |
+-| 3 | Node.js | SyntaxError with 10 node internal frames | 812 | 281 | 65.4% |
+-| 4 | Node.js | ECONNREFUSED with 30 frames | 2,466 | 494 | 80.0% |
+-| 5 | Python | ValueError with 22 FastAPI frames | 3,097 | 333 | 89.3% |
+-| 6 | Python | KeyError with 12 Django frames | 1,567 | 173 | 89.0% |
+-| 7 | Python | ImportError with 20 bootstrap frames | 2,201 | 175 | 92.1% |
+-| 8 | Python | AttributeError with 12 Flask frames | 1,609 | 311 | 80.7% |
+-| 9 | Rust | Index out of bounds panic 20 frames | 2,709 | 2,640 | 2.6% |
+-| 10 | Rust | Unwrap on None panic 10 frames | 1,337 | 1,313 | 1.8% |
+-| 11 | Rust | Thread panic 5 workers + 10 frames | 1,424 | 1,332 | 6.5% |
+-| 12 | Rust | Custom panic with 7 frames | 997 | 974 | 2.4% |
+-| 13 | Go | Nil pointer goroutine crash 25 frames | 1,724 | 48 | 97.3% |
+-| 14 | Go | Index out of range 3 goroutines | 939 | 59 | 93.8% |
+-| 15 | Go | Deadlock 6 goroutines | 801 | 52 | 93.6% |
+-| 16 | Go | Channel close panic 4 goroutines | 537 | 30 | 94.5% |
+-| 17 | Java | NullPointerException 30 Spring frames | 3,049 | 1,340 | 56.1% |
+-| 18 | Java | ClassCastException 20 frames | 2,015 | 1,288 | 36.1% |
+-| 19 | Java | IOException 21 HttpClient frames | 1,812 | 2,032 | -12.1% |
+-| 20 | Java | Custom exception with Caused by chain | 1,503 | 1,041 | 30.8% |
+-
+-### Web Pages (15 cases, avg 42.5% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 21 | Documentation | Supabase-like auth docs with nav/sidebar/footer | 5,316 | 3,319 | 37.6% |
+-| 22 | Documentation | MDN-like Array.map reference | 5,304 | 3,657 | 31.1% |
+-| 23 | Documentation | Stripe-like PaymentIntent API docs | 3,619 | 2,983 | 17.6% |
+-| 24 | Documentation | Next.js-like routing docs | 3,732 | 2,654 | 28.9% |
+-| 25 | Documentation | Rust book-like ownership chapter | 3,509 | 1,407 | 59.9% |
+-| 26 | Blog | Medium-like blog post with sidebars/CTAs | 4,829 | 4,186 | 13.3% |
+-| 27 | Blog | Dev.to-like Rust tutorial post | 3,839 | 2,626 | 31.6% |
+-| 28 | Blog | Personal blog with newsletter/share buttons | 2,445 | 2,322 | 5.0% |
+-| 29 | API Reference | REST API users endpoint docs | 2,414 | 1,030 | 57.3% |
+-| 30 | API Reference | GraphQL schema User type docs | 2,295 | 825 | 64.1% |
+-| 31 | API Reference | Python SDK reference with code examples | 1,900 | 1,016 | 46.5% |
+-| 32 | Heavy Navigation | Page with 30+ nav items mega-footer (#32) | 6,325 | 2,449 | 61.3% |
+-| 33 | Heavy Navigation | Page with 30+ nav items mega-footer (#33) | 6,325 | 2,449 | 61.3% |
+-| 34 | Heavy Navigation | Page with 30+ nav items mega-footer (#34) | 6,325 | 2,449 | 61.3% |
+-| 35 | Heavy Navigation | Page with 30+ nav items mega-footer (#35) | 6,325 | 2,449 | 61.3% |
+-
+-### ANSI/Spinners (15 cases, avg 82.5% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 36 | ANSI Colors | Git diff colored output (35 lines) | 2,340 | 2,340 | 0.0% |
+-| 37 | ANSI Colors | Jest test results with 2 failures (25 tests) | 1,750 | 126 | 92.8% |
+-| 38 | ANSI Colors | ESLint colored output 16 problems | 2,056 | 1,783 | 13.3% |
+-| 39 | ANSI Colors | Cargo build colored with 2 errors | 1,981 | 266 | 86.6% |
+-| 40 | ANSI Colors | npm install with 10 deprecation warnings | 1,918 | 48 | 97.5% |
+-| 41 | Spinners/Progress | npm install with 20 spinner lines | 1,649 | 48 | 97.1% |
+-| 42 | Spinners/Progress | Cargo build 30 crate compilations | 1,228 | 48 | 96.1% |
+-| 43 | Spinners/Progress | Docker pull with download progress | 1,108 | 48 | 95.7% |
+-| 44 | Spinners/Progress | pip install with progress bars and satisfied deps | 2,724 | 48 | 98.3% |
+-| 45 | Spinners/Progress | Webpack bundling with progress percentages | 1,319 | 48 | 96.4% |
+-| 46 | Decorations | Prisma-like ASCII art banner with box drawing | 2,889 | 48 | 98.4% |
+-| 47 | Decorations | Test results with dividers and decorations | 1,681 | 411 | 75.6% |
+-| 48 | Decorations | create-next-app with box drawing and prompts | 1,620 | 48 | 97.1% |
+-| 49 | Decorations | Build output with stars/dashes/equals | 925 | 48 | 94.9% |
+-| 50 | Decorations | Deployment status with heavy box drawing | 2,229 | 48 | 97.9% |
+-
+-### Build Errors (15 cases, avg 55.6% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 51 | TypeScript tsc | 5 TS errors across 4 files | 651 | 413 | 36.6% |
+-| 52 | TypeScript tsc | 10 TS errors across 5 files | 1,215 | 579 | 52.4% |
+-| 53 | TypeScript tsc | 20 TS2322 errors in 20 files | 2,938 | 555 | 81.2% |
+-| 54 | TypeScript tsc | 40 mixed TS errors in 40 files | 5,017 | 2,106 | 58.1% |
+-| 55 | TypeScript tsc | 100 TS errors in 100 files | 14,130 | 6,818 | 51.8% |
+-| 56 | ESLint | 5 ESLint violations | 585 | 570 | 2.6% |
+-| 57 | ESLint | 10 ESLint violations | 969 | 1,065 | -9.9% |
+-| 58 | ESLint | 20 ESLint violations in 5 files | 2,226 | 2,026 | 9.0% |
+-| 59 | ESLint | 50 ESLint violations in 10 files | 3,901 | 1,603 | 59.0% |
+-| 60 | ESLint | 100 ESLint violations in 20 files | 10,271 | 2,032 | 80.3% |
+-| 61 | Cargo | 3 Rust compiler errors | 914 | 202 | 77.9% |
+-| 62 | Cargo | 5 Rust E0308 errors | 1,399 | 139 | 90.1% |
+-| 63 | Cargo | 10 mixed Rust errors | 1,672 | 491 | 70.7% |
+-| 64 | Cargo | 20 Rust E0308 errors | 4,486 | 540 | 88.0% |
+-| 65 | Cargo | 50 Rust errors | 6,665 | 901 | 86.5% |
+-
+-### Package Install (15 cases, avg 39.2% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 66 | npm | npm install with 10 deprecated warnings | 1,196 | 1,103 | 7.8% |
+-| 67 | npm | npm install with 50 deprecated + vulns | 9,144 | 8,964 | 2.0% |
+-| 68 | npm | npm install with 100 deprecated + 12 vulns | 9,134 | 8,976 | 1.8% |
+-| 69 | npm | npm install clean (no warnings) | 116 | 48 | 58.7% |
+-| 70 | npm | npm install with 5 deprecated + 8 vulns | 769 | 419 | 45.6% |
+-| 71 | pip | pip install short (2 packages; 5 already satisfied) | 827 | 48 | 94.2% |
+-| 72 | pip | pip install long (3 packages; 30 already satisfied) | 3,691 | 48 | 98.7% |
+-| 73 | pip | pip install with deprecation/security warnings | 2,282 | 227 | 90.1% |
+-| 74 | yarn | yarn install with 10 warnings | 1,318 | 1,114 | 15.5% |
+-| 75 | pnpm | pnpm install with progress + 10 deprecated | 1,137 | 377 | 66.9% |
+-| 76 | cargo | cargo install with compile progress | 934 | 48 | 94.9% |
+-| 77 | npm | npm install with 50 deprecated warnings | 3,216 | 3,123 | 2.9% |
+-| 78 | npm | npm install with 60 deprecated warnings | 3,846 | 3,753 | 2.5% |
+-| 79 | npm | npm install with 70 deprecated warnings | 4,517 | 4,383 | 3.0% |
+-| 80 | npm | npm install with 80 deprecated warnings | 5,147 | 5,013 | 2.7% |
+-
+-### Docker Build (10 cases, avg 88.2% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 81 | Success | 5 steps mostly cached | 656 | 48 | 92.7% |
+-| 82 | Success | 10 steps with pnpm build | 1,501 | 48 | 96.9% |
+-| 83 | Success | 15 steps multi-stage build | 1,594 | 48 | 97.0% |
+-| 84 | Success | 20 steps long build | 1,900 | 48 | 97.5% |
+-| 85 | Success | Legacy builder with npm warnings + next build | 1,468 | 233 | 84.2% |
+-| 86 | Failure | Fail at step 4/5 (pnpm version mismatch) | 1,242 | 249 | 80.0% |
+-| 87 | Failure | Fail at step 7/12 (TypeScript build error) | 1,679 | 369 | 78.1% |
+-| 88 | Failure | Fail at step 16/20 (missing env var) | 1,437 | 265 | 81.6% |
+-| 89 | Compose | docker compose up with 5 services | 1,260 | 48 | 96.2% |
+-| 90 | Compose | docker compose up failure (missing module) | 1,318 | 296 | 77.6% |
+-
+-### CLI Commands (12 cases, avg 42.0% savings)
+-
+-| # | Subcategory | Description | Input (chars) | Output (chars) | Savings |
+-|--:|-------------|-------------|:--------------|:---------------|--------:|
+-| 91 | Real | git log --oneline -20 | 1,262 | 1,262 | 0.0% |
+-| 92 | Real | git diff HEAD~1 | 1,346 | 1,067 | 20.8% |
+-| 93 | Real | ls src/ | 866 | 1,352 | -56.1% |
+-| 94 | Real | ls -la (project root) | 2,174 | 593 | 72.8% |
+-| 95 | Real | find src/ -name *.rs | 1,368 | 641 | 53.2% |
+-| 97 | Real | cargo test -- --list | 60,234 | 291 | 99.6% |
+-| 98 | Real | git status | 100 | 49 | 51.0% |
+-| 99 | Real | git log --stat -5 | 2,999 | 661 | 78.0% |
+-| 100 | Real | grep -r fn src/ (first 50 lines) | 3,148 | 3,148 | 0.0% |
+-| 101 | Real | git log -10 (full format) | 3,870 | 1,627 | 58.0% |
+-| 102 | Real | cargo check | 72 | 32 | 55.6% |
+-| 103 | Real | ls -la src/ | 4,707 | 1,352 | 71.3% |
++**Date:** 2026-08-11
++**Version:** 0.2.0
++**Test cases:** 59 (55 good, 2 skip, 2 fail)
++**Methodology:** Each test runs the real command via the release binary and the equivalent shell command, then compares character counts as a token proxy. All tests run with `CONTEXTZIP_QUIET=1`. Numbers below are from an actual harness run on this machine - no carried-forward figures.
++
++## Global Summary
++
++```
++Tokens: 916317 -> 87941  (-90%)
++55 good  2 skip  2 fail    55/59 (93%)
++```
++
++## Per-Command Results
++
++### ls (8 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| ls | 574 | 129 | 77% |
++| ls src/ | 1,323 | 354 | 73% |
++| ls -l src/ | 1,294 | 354 | 72% |
++| ls -la src/ | 1,323 | 354 | 73% |
++| ls -lh src/ | 1,294 | 354 | 72% |
++| ls src/ -l | 1,294 | 354 | 72% |
++| ls -a | 574 | 135 | 76% |
++| ls src/ scripts/ (multi) | 1,541 | 412 | 73% |
++
++### read (4 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| read src/main.rs (default) | 22,101 | 21,345 | 3% |
++| read src/main.rs -l minimal | 22,101 | 21,345 | 3% |
++| read src/main.rs -l aggressive | 22,101 | 1,886 | 91% |
++| read src/main.rs -n | 26,882 | 26,058 | 3% |
++
++### find (4 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| find '*' | 653,779 | 258 | 99% |
++| find '*.rs' | 898 | 162 | 81% |
++| find '*' --max 10 | 65 | 48 | 26% |
++| find '*' --max 100 | 843 | 475 | 43% |
++
++### git (4 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| git status | 20 | 15 | 25% |
++| git log -n 10 | 1,188 | 335 | 71% |
++| git log -n 5 | 367 | 148 | 59% |
++| git diff HEAD~1 | 468 | 303 | 35% |
++
++### grep (5 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| grep 'fn ' src/ | 36,292 | 2,962 | 91% |
++| grep 'struct ' src/ | 1,701 | 1,524 | 10% |
++| grep 'fn ' src/ -l 40 | 36,292 | 2,470 | 93% |
++| grep 'fn ' src/ --max 20 | 340 | 248 | 27% |
++| grep 'fn ' src/ -c | 13,136 | 2,942 | 77% |
++
++### json (2 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| json /tmp/rtk_bench.json | 59 | 51 | 13% |
++| json /tmp/rtk_bench.json -d 2 | 59 | 50 | 15% |
++
++### deps (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| deps (Cargo.toml) | 417 | 55 | 86% |
++
++### env (3 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| env | 1,851 | 680 | 63% |
++| env -f PATH | 975 | 109 | 88% |
++| env --show-all | 1,851 | 703 | 62% |
++
++### err (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| err cargo build | 18 | 12 | 33% |
++
++### test (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| test cargo test | 18,850 | 51 | 99% |
++
++### log (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| log /tmp/rtk_bench_sample.log | 158 | 58 | 63% |
++
++### summary (2 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| summary cargo --help | 525 | 65 | 87% |
++| summary rustc --help | 1,006 | 55 | 94% |
++
++### cargo (4 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| cargo build | 18 | 8 | 55% |
++| cargo test | 18,850 | 13 | 99% |
++| cargo clippy | 18 | 8 | 55% |
++| cargo check | 18 | 8 | 55% |
++
++### diff (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| diff Cargo.toml LICENSE | 780 | 597 | 23% |
++
++### smart (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| smart src/main.rs | 22,101 | 27 | 99% |
++
++### wc (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| wc Cargo.toml src/main.rs | 26 | 20 | 23% |
++
++### curl (2 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| curl https://httpbin.org/json | 107 | 39 | 63% |
++| curl https://httpbin.org/robots.txt | 8 | 8 | 0% (skip - trivially small input) |
++
++### wget (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| wget https://httpbin.org/robots.txt | 8 | 17 | -112% (skip - inflating on trivial input) |
++
++### gh (2 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| gh pr list | 0 | 4 | n/a (empty input - no PRs in this repo) |
++| gh run list | 0 | 4 | n/a (empty input - no runs in this repo) |
++
++### docker (2 tests - FAILED)
++
++Not measured: `docker` binary not present on this machine. Both `docker ps` and `docker images` returned no output.
++
++### python - ruff / pytest (2 tests)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| ruff check . | 278 | 63 | 77% |
++| pytest -v | 202 | 7 | 96% |
++
++### mypy (1 test)
++
++| Command | Input tokens | Output tokens | Savings |
++|---------|-------------:|--------------:|--------:|
++| mypy (2 sample files) | 343 | 268 | 21% |
++
++### rewrite (6 tests)
++
++Functional correctness tests only - no savings metric applies. All 6 passed.
++
++---
++
++## Ranked Classification
++
++Commands are classified by measured savings. This list drives the Phase 3 improvement work list.
++
++### 🟢 >=60% savings (strong - keep as-is)
++
++- `ls` (all flag variants): 72-77%
++- `read -l aggressive`: 91%
++- `find '*'` (unfiltered): 99%
++- `find '*.rs'` (glob): 81%
++- `git log -n 10`: 71%
++- `grep 'fn ' src/` (full): 91%
++- `grep 'fn ' src/ -l 40` (line-limit): 93%
++- `grep 'fn ' src/ -c` (count mode): 77%
++- `deps`: 86%
++- `env`: 63%
++- `env -f PATH`: 88%
++- `env --show-all`: 62%
++- `test cargo test`: 99%
++- `log`: 63%
++- `summary cargo --help`: 87%
++- `summary rustc --help`: 94%
++- `cargo test`: 99%
++- `smart src/main.rs`: 99%
++- `curl` (JSON response): 63%
++- `ruff check`: 77%
++- `pytest -v`: 96%
++
++### 🟡 20-60% savings (moderate - improvement candidates)
++
++- `find '*' --max 10`: 26%
++- `find '*' --max 100`: 43%
++- `git status`: 25%
++- `git log -n 5`: 59%
++- `git diff HEAD~1`: 35%
++- `grep 'fn ' src/ --max 20`: 27%
++- `err cargo build`: 33%
++- `cargo build`: 55%
++- `cargo clippy`: 55%
++- `cargo check`: 55%
++- `diff Cargo.toml LICENSE`: 23%
++- `wc`: 23%
++- `mypy`: 21%
++
++### 🔴 <20% or inflating (weak/broken - Phase 3 fix targets)
++
++- `read` (default level): 3%
++- `read -l minimal`: 3%
++- `read -n` (with line numbers): 3%
++- `grep 'struct ' src/` (small result set): 10%
++- `json` (default): 13%
++- `json -d 2`: 15%
++- `wget` (small/plain-text response): -112% (inflating)
++- `gh pr list` / `gh run list`: inflating on empty input (0 -> 4 tokens)
++- `curl` (plain-text robots.txt): 0%
++
++---
+ 
+ ## Notes
+ 
+ ### Measurement Methodology
+-- **Error Stacktraces (1-20):** Realistic stacktraces piped through `contextzip err cat <file>`
+-- **Web Pages (21-35):** HTML files processed by `extract_content()` function (tested via `cargo test`)
+-- **ANSI/Spinners (36-50):** ANSI-laden output piped through `contextzip err cat <file>`
+-- **Build Errors (51-65):** Realistic compiler output through `contextzip tsc/lint/cargo cat <file>`
+-- **Package Install (66-80):** Install logs through `contextzip npm/pip/pnpm cat <file>`
+-- **Docker Build (81-90):** Docker build output through `contextzip docker cat <file>`
+-- **CLI Commands (91-103):** Real commands run in the contextzip repository
+-
+-### Why Some Cases Show Low/Negative Savings
+-- **`err` filter catches all as success:** When `contextzip err` runs a command that exits 0, it outputs `[ok] Command completed successfully (no errors)` -- a 48-char summary. This is great for noisy success output but shows low savings for already-concise error messages.
+-- **npm deprecation warnings:** The `npm` filter passes through warnings rather than stripping them, since deprecation info can be useful.
+-- **Rust panics:** The `err` filter doesn't specifically parse Rust panic format, so it treats panic output as normal output.
+-- **`ls` enrichment:** `contextzip ls` adds file count, sizes, and directory structure info that can exceed raw `ls` output for small directories.
+-- **Java IOException:** The `err` filter added formatting overhead that exceeded the original for this particular case.
+-- **ESLint small inputs:** With fewer than 10 violations, the filter's grouping headers add overhead.
+-
+-### Honest Assessment
+-- The `err` filter is a blunt instrument: it excels at filtering success noise (92-98% savings) but adds overhead to already-error-only output.
+-- Specialized filters (`tsc`, `cargo`, `lint`, `docker`, `pip`) provide much better results than the generic `err` filter.
+-- Web extraction works well for nav-heavy pages (61%) but less so for content-rich pages with minimal chrome (5-18%).
+-- The best real-world savings come from: `cargo test --list` (99.6%), Docker build success (92-97%), pip install (90-99%), and Go/Node.js stacktraces (80-97%).
++
++Character count is used as a token proxy. The harness runs each command twice - once via the raw shell equivalent, once via `contextzip` - and compares output sizes. Savings = `(1 - output/input) * 100`. All runs use `CONTEXTZIP_QUIET=1` to suppress contextzip's own status lines.
++
++### Why Some Commands Show Low or Negative Savings
++
++- **`read` (default/minimal level):** The default and minimal filter levels preserve nearly all content by design. Use `-l aggressive` for deep compression.
++- **`grep` on small result sets:** When the filtered result is already compact (e.g., `grep struct` produces only a few lines), the filter adds header overhead that exceeds gains.
++- **`json` on small files:** The test fixture (`/tmp/rtk_bench.json`) is tiny (59 tokens). Format normalization saves little on already-minimal JSON.
++- **`wget` on plain-text:** The robots.txt response is 8 tokens. contextzip emits a wrapper that exceeds the original.
++- **`gh pr list` / `gh run list`:** No PRs or runs exist in this repo, so input is 0 tokens. contextzip emits a small status message, making output larger than input. Not a real-world concern.
++- **`cargo build` / `clippy` / `check`:** Build is already cached (0 crates compiled), so raw output is only 18 tokens. Savings look modest in percentage but the absolute compression holds on real builds.
++- **`docker` commands:** Not measured - `docker` binary absent on this machine. Add to CI matrix when docker is available.
+diff --git a/scripts/benchmark.sh b/scripts/benchmark.sh
+index 4c72ba9..309a1cc 100755
+--- a/scripts/benchmark.sh
++++ b/scripts/benchmark.sh
+@@ -526,6 +526,57 @@ GOEOF
+   rm -rf "$GO_FIXTURE"
+ fi
+ 
++# ===================
++# mypy (live-binary bench; no offline fixture possible - mypy_cmd has no stdin mode)
++# Skipped commands: aws (no creds), terraform (no subcommand + no creds),
++#   docker (daemon not running), kubectl (not installed)
++# ===================
++section "mypy"
++
++if command -v mypy &>/dev/null || python3 -m mypy --version &>/dev/null 2>&1; then
++  MYPY_DIR=$(mktemp -d)
++  cat > "$MYPY_DIR/sample.py" << 'PYEOF'
++from typing import Optional
++
++def maybe_upper(x: Optional[str]) -> str:
++    return x.upper()
++
++def bad_return(flag: bool) -> int:
++    if flag:
++        return 42
++
++def takes_int(x: int) -> None:
++    print(x)
++
++takes_int("hello")
++takes_int(3.14)
++result: int = maybe_upper("world")
++PYEOF
++  cat > "$MYPY_DIR/multi.py" << 'PYEOF'
++from typing import Dict, Optional
++import json
++
++def parse_config(path: str) -> Dict[str, str]:
++    with open(path) as f:
++        data = json.load(f)
++    return data
++
++def compute_ratio(a: int, b: int) -> float:
++    if b == 0:
++        return None
++    return a / b
++
++x: int = "not an int"
++y: str = 42
++PYEOF
++  bench "mypy" \
++    "mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true" \
++    "$CONTEXTZIP mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true"
++  rm -rf "$MYPY_DIR"
++else
++  echo "  mypy: mypy not in PATH, skipped"
++fi
++
+ # ===================
+ # rewrite (verify rewrite works with and without quotes)
+ # ===================
+diff --git a/src/aws_cmd.rs b/src/aws_cmd.rs
+index a2182a6..23cb2a0 100644
+--- a/src/aws_cmd.rs
++++ b/src/aws_cmd.rs
+@@ -99,22 +99,16 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
+     }
+ 
+     let filtered = match json_cmd::filter_json_string(&raw, JSON_COMPRESS_DEPTH) {
+-        Ok(schema) => {
+-            println!("{}", schema);
+-            schema
+-        }
+-        Err(_) => {
+-            // Fallback: print raw (maybe not JSON)
+-            print!("{}", raw);
+-            raw.clone()
+-        }
++        Ok(schema) => format!("{schema}\n"),
++        Err(_) => raw.clone(),
+     };
+ 
+-    timer.track(
++    timer.emit(
+         &format!("aws {}", full_sub),
+         &format!("contextzip aws {}", full_sub),
+         &raw,
+         &filtered,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -181,14 +175,8 @@ fn run_sts_identity(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws sts get-caller-identity",
+-        "contextzip aws sts get-caller-identity",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws sts get-caller-identity", "contextzip aws sts get-caller-identity", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -217,9 +205,8 @@ fn run_s3_ls(extra_args: &[String], verbose: u8) -> Result<()> {
+     }
+ 
+     let filtered = filter_s3_ls(&raw);
+-    println!("{}", filtered);
+-
+-    timer.track("aws s3 ls", "contextzip aws s3 ls", &raw, &filtered);
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws s3 ls", "contextzip aws s3 ls", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -241,14 +228,8 @@ fn run_ec2_describe(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws ec2 describe-instances",
+-        "contextzip aws ec2 describe-instances",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws ec2 describe-instances", "contextzip aws ec2 describe-instances", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -270,14 +251,8 @@ fn run_ecs_list_services(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws ecs list-services",
+-        "contextzip aws ecs list-services",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws ecs list-services", "contextzip aws ecs list-services", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -299,14 +274,8 @@ fn run_ecs_describe_services(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws ecs describe-services",
+-        "contextzip aws ecs describe-services",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws ecs describe-services", "contextzip aws ecs describe-services", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -329,14 +298,8 @@ fn run_rds_describe(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws rds describe-db-instances",
+-        "contextzip aws rds describe-db-instances",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws rds describe-db-instances", "contextzip aws rds describe-db-instances", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -359,14 +322,8 @@ fn run_cfn_list_stacks(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws cloudformation list-stacks",
+-        "contextzip aws cloudformation list-stacks",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws cloudformation list-stacks", "contextzip aws cloudformation list-stacks", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -389,14 +346,8 @@ fn run_cfn_describe_stacks(extra_args: &[String], verbose: u8) -> Result<()> {
+         Some(f) => f,
+         None => raw.clone(),
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
+-        "aws cloudformation describe-stacks",
+-        "contextzip aws cloudformation describe-stacks",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("aws cloudformation describe-stacks", "contextzip aws cloudformation describe-stacks", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/cargo_cmd.rs b/src/cargo_cmd.rs
+index af8208c..b095150 100644
+--- a/src/cargo_cmd.rs
++++ b/src/cargo_cmd.rs
+@@ -97,14 +97,15 @@ where
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+     let filtered = filter_fn(&raw);
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, &format!("cargo_{}", subcommand), exit_code)
+-    {
+-        println!("{}\n{}", filtered, hint);
+-    } else {
+-        println!("{}", filtered);
+-    }
++    let filtered_out =
++        if let Some(hint) = crate::tee::tee_and_hint(&raw, &format!("cargo_{}", subcommand), exit_code)
++        {
++            format!("{filtered}\n{hint}\n")
++        } else {
++            format!("{filtered}\n")
++        };
+ 
+-    timer.track(
++    timer.emit(
+         &format!("cargo {} {}", subcommand, restored_args.join(" ")),
+         &format!(
+             "contextzip cargo {} {}",
+@@ -112,7 +113,8 @@ where
+             restored_args.join(" ")
+         ),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     if !output.status.success() {
+diff --git a/src/container.rs b/src/container.rs
+index fed83db..3fbfae1 100644
+--- a/src/container.rs
++++ b/src/container.rs
+@@ -54,8 +54,8 @@ fn docker_ps(_verbose: u8) -> Result<()> {
+ 
+     if stdout.trim().is_empty() {
+         compressed.push_str("[docker] 0 containers");
+-        println!("{}", compressed);
+-        timer.track("docker ps", "contextzip docker ps", &raw, &compressed);
++        let compressed_out = format!("{compressed}\n");
++        timer.emit("docker ps", "contextzip docker ps", &raw, &compressed_out, "cli");
+         return Ok(());
+     }
+ 
+@@ -88,8 +88,7 @@ fn docker_ps(_verbose: u8) -> Result<()> {
+         compressed.push_str(&format!("  ... +{} more", count - 15));
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track("docker ps", "contextzip docker ps", &raw, &compressed);
++    timer.emit("docker ps", "contextzip docker ps", &raw, &compressed, "cli");
+     Ok(())
+ }
+ 
+@@ -120,12 +119,13 @@ fn docker_images(_verbose: u8) -> Result<()> {
+ 
+     if lines.is_empty() {
+         compressed.push_str("[docker] 0 images");
+-        println!("{}", compressed);
+-        timer.track(
++        let compressed_out = format!("{compressed}\n");
++        timer.emit(
+             "docker images",
+             "contextzip docker images",
+             &raw,
+-            &compressed,
++            &compressed_out,
++            "cli",
+         );
+         return Ok(());
+     }
+@@ -174,12 +174,12 @@ fn docker_images(_verbose: u8) -> Result<()> {
+         compressed.push_str(&format!("  ... +{} more", lines.len() - 15));
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track(
++    timer.emit(
+         "docker images",
+         "contextzip docker images",
+         &raw,
+         &compressed,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -217,12 +217,13 @@ fn docker_logs(args: &[String], _verbose: u8) -> Result<()> {
+ 
+     let analyzed = crate::log_cmd::run_stdin_str(&raw);
+     let compressed = format!("[docker] Logs for {}:\n{}", container, analyzed);
+-    println!("{}", compressed);
+-    timer.track(
++    let compressed_out = format!("{compressed}\n");
++    timer.emit(
+         &format!("docker logs {}", container),
+         "contextzip docker logs",
+         &raw,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -253,12 +254,13 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
+         Ok(v) => v,
+         Err(_) => {
+             compressed.push_str("No pods found");
+-            println!("{}", compressed);
+-            timer.track(
++            let compressed_out = format!("{compressed}\n");
++            timer.emit(
+                 "kubectl get pods",
+                 "contextzip kubectl pods",
+                 &raw,
+-                &compressed,
++                &compressed_out,
++                "cli",
+             );
+             return Ok(());
+         }
+@@ -266,12 +268,13 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
+ 
+     let Some(pods) = json["items"].as_array().filter(|a| !a.is_empty()) else {
+         compressed.push_str("No pods found");
+-        println!("{}", compressed);
+-        timer.track(
++        let compressed_out = format!("{compressed}\n");
++        timer.emit(
+             "kubectl get pods",
+             "contextzip kubectl pods",
+             &raw,
+-            &compressed,
++            &compressed_out,
++            "cli",
+         );
+         return Ok(());
+     };
+@@ -339,12 +342,12 @@ fn kubectl_pods(args: &[String], _verbose: u8) -> Result<()> {
+         }
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track(
++    timer.emit(
+         "kubectl get pods",
+         "contextzip kubectl pods",
+         &raw,
+         &compressed,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -375,12 +378,13 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
+         Ok(v) => v,
+         Err(_) => {
+             compressed.push_str("No services found");
+-            println!("{}", compressed);
+-            timer.track(
++            let compressed_out = format!("{compressed}\n");
++            timer.emit(
+                 "kubectl get svc",
+                 "contextzip kubectl svc",
+                 &raw,
+-                &compressed,
++                &compressed_out,
++                "cli",
+             );
+             return Ok(());
+         }
+@@ -388,12 +392,13 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
+ 
+     let Some(services) = json["items"].as_array().filter(|a| !a.is_empty()) else {
+         compressed.push_str("No services found");
+-        println!("{}", compressed);
+-        timer.track(
++        let compressed_out = format!("{compressed}\n");
++        timer.emit(
+             "kubectl get svc",
+             "contextzip kubectl svc",
+             &raw,
+-            &compressed,
++            &compressed_out,
++            "cli",
+         );
+         return Ok(());
+     };
+@@ -434,12 +439,12 @@ fn kubectl_services(args: &[String], _verbose: u8) -> Result<()> {
+         compressed.push_str(&format!("  ... +{} more", services.len() - 15));
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track(
++    timer.emit(
+         "kubectl get svc",
+         "contextzip kubectl svc",
+         &raw,
+         &compressed,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -478,12 +483,13 @@ fn kubectl_logs(args: &[String], _verbose: u8) -> Result<()> {
+ 
+     let analyzed = crate::log_cmd::run_stdin_str(&raw);
+     let compressed = format!("Logs for {}:\n{}", pod, analyzed);
+-    println!("{}", compressed);
+-    timer.track(
++    let compressed_out = format!("{compressed}\n");
++    timer.emit(
+         &format!("kubectl logs {}", pod),
+         "contextzip kubectl logs",
+         &raw,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -689,12 +695,13 @@ pub fn run_compose_ps(verbose: u8) -> Result<()> {
+     }
+ 
+     let compressed = format_compose_ps(&structured);
+-    println!("{}", compressed);
+-    timer.track(
++    let compressed_out = format!("{compressed}\n");
++    timer.emit(
+         "docker compose ps",
+         "contextzip docker compose ps",
+         &raw,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -726,13 +733,14 @@ pub fn run_compose_logs(service: Option<&str>, verbose: u8) -> Result<()> {
+     }
+ 
+     let compressed = format_compose_logs(&raw);
+-    println!("{}", compressed);
++    let compressed_out = format!("{compressed}\n");
+     let svc_label = service.unwrap_or("all");
+-    timer.track(
++    timer.emit(
+         &format!("docker compose logs {}", svc_label),
+         "contextzip docker compose logs",
+         &raw,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -764,13 +772,14 @@ pub fn run_compose_build(service: Option<&str>, verbose: u8) -> Result<()> {
+     }
+ 
+     let compressed = format_compose_build(&raw);
+-    println!("{}", compressed);
++    let compressed_out = format!("{compressed}\n");
+     let svc_label = service.unwrap_or("all");
+-    timer.track(
++    timer.emit(
+         &format!("docker compose build {}", svc_label),
+         "contextzip docker compose build",
+         &raw,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+diff --git a/src/curl_cmd.rs b/src/curl_cmd.rs
+index 192dc78..d8f956a 100644
+--- a/src/curl_cmd.rs
++++ b/src/curl_cmd.rs
+@@ -40,13 +40,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+     } else {
+         filter_curl_output(&stdout)
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("curl {}", args.join(" ")),
+         &format!("contextzip curl {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/deps.rs b/src/deps.rs
+index eab7785..154bfa7 100644
+--- a/src/deps.rs
++++ b/src/deps.rs
+@@ -74,8 +74,7 @@ pub fn run(path: &Path, verbose: u8) -> Result<()> {
+         output.push_str(&format!("No dependency files found in {}", dir.display()));
+     }
+ 
+-    print!("{}", output);
+-    timer.track("cat */deps", "contextzip deps", &raw, &output);
++    timer.emit("cat */deps", "contextzip deps", &raw, &output, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/diff_cmd.rs b/src/diff_cmd.rs
+index 6b84495..983826c 100644
+--- a/src/diff_cmd.rs
++++ b/src/diff_cmd.rs
+@@ -23,12 +23,13 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
+ 
+     if diff.added == 0 && diff.removed == 0 {
+         compressed.push_str("[ok] Files are identical");
+-        println!("{}", compressed);
+-        timer.track(
++        let compressed_out = format!("{compressed}\n");
++        timer.emit(
+             &format!("diff {} {}", file1.display(), file2.display()),
+             "contextzip diff",
+             &raw,
+-            &compressed,
++            &compressed_out,
++            "cli",
+         );
+         return Ok(());
+     }
+@@ -59,12 +60,12 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<()> {
+         compressed.push_str(&format!("... +{} more changes", diff.changes.len() - 50));
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track(
++    timer.emit(
+         &format!("diff {} {}", file1.display(), file2.display()),
+         "contextzip diff",
+         &raw,
+         &compressed,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -79,13 +80,13 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
+ 
+     // Parse unified diff format
+     let condensed = condense_unified_diff(&input);
+-    println!("{}", condensed);
+-
+-    timer.track(
++    let condensed_out = format!("{condensed}\n");
++    timer.emit(
+         "diff (stdin)",
+         "contextzip diff (stdin)",
+         &input,
+-        &condensed,
++        &condensed_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/dotnet_cmd.rs b/src/dotnet_cmd.rs
+index 91ada7d..2ee7504 100644
+--- a/src/dotnet_cmd.rs
++++ b/src/dotnet_cmd.rs
+@@ -49,13 +49,13 @@ pub fn run_format(args: &[String], verbose: u8) -> Result<()> {
+     let check_mode = !has_write_mode_override(args);
+     let filtered =
+         format_report_summary_or_raw(report_path.as_deref(), check_mode, &raw, command_started_at);
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("dotnet format {}", args.join(" ")),
+         &format!("contextzip dotnet format {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     if cleanup_report_path {
+@@ -236,13 +236,13 @@ fn run_dotnet_with_binlog(subcommand: &str, args: &[String], verbose: u8) -> Res
+         filtered
+     };
+ 
+-    println!("{}", output_to_print);
+-
+-    timer.track(
++    let output_to_print_out = format!("{output_to_print}\n");
++    timer.emit(
+         &format!("dotnet {} {}", subcommand, args.join(" ")),
+         &format!("contextzip dotnet {} {}", subcommand, args.join(" ")),
+         &raw,
+-        &output_to_print,
++        &output_to_print_out,
++        "cli",
+     );
+ 
+     cleanup_temp_file(&binlog_path);
+diff --git a/src/find_cmd.rs b/src/find_cmd.rs
+index 833a2cb..876e7ee 100644
+--- a/src/find_cmd.rs
++++ b/src/find_cmd.rs
+@@ -277,12 +277,13 @@ pub fn run(
+ 
+     if files.is_empty() {
+         let msg = format!("0 for '{}'", effective_pattern);
+-        println!("{}", msg);
+-        timer.track(
++        let msg_out = format!("{msg}\n");
++        timer.emit(
+             &format!("find {} -name '{}'", path, effective_pattern),
+             "contextzip find",
+             &raw_output,
+-            &msg,
++            &msg_out,
++            "cli",
+         );
+         return Ok(());
+     }
+diff --git a/src/format_cmd.rs b/src/format_cmd.rs
+index 197de00..36ef185 100644
+--- a/src/format_cmd.rs
++++ b/src/format_cmd.rs
+@@ -125,13 +125,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         _ => raw.trim().to_string(),
+     };
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("{} {}", formatter, user_args.join(" ")),
+         &format!("contextzip format {} {}", formatter, user_args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/gh_cmd.rs b/src/gh_cmd.rs
+index 0670f2d..79fcae9 100644
+--- a/src/gh_cmd.rs
++++ b/src/gh_cmd.rs
+@@ -1056,13 +1056,13 @@ fn pr_create(args: &[String], _verbose: u8) -> Result<()> {
+     };
+ 
+     let filtered = ok_confirmation("created", &detail);
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         "gh pr create",
+         "contextzip gh pr create",
+         &stdout,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -1100,7 +1100,7 @@ fn pr_merge(args: &[String], _verbose: u8) -> Result<()> {
+     };
+ 
+     let filtered = ok_confirmation("merged", &detail);
+-    println!("{}", filtered);
++    let filtered_out = format!("{filtered}\n");
+ 
+     // Use stdout or detail as raw input (gh pr merge doesn't output much)
+     let raw = if !stdout.trim().is_empty() {
+@@ -1109,7 +1109,7 @@ fn pr_merge(args: &[String], _verbose: u8) -> Result<()> {
+         detail.clone()
+     };
+ 
+-    timer.track("gh pr merge", "contextzip gh pr merge", &raw, &filtered);
++    timer.emit("gh pr merge", "contextzip gh pr merge", &raw, &filtered_out, "cli");
+     Ok(())
+ }
+ 
+@@ -1145,16 +1145,12 @@ fn pr_diff(args: &[String], _verbose: u8) -> Result<()> {
+     }
+ 
+     let filtered = if raw.trim().is_empty() {
+-        let msg = "No diff\n";
+-        print!("{}", msg);
+-        msg.to_string()
++        "No diff\n".to_string()
+     } else {
+-        let compacted = git::compact_diff(&raw, 500);
+-        println!("{}", compacted);
+-        compacted
++        format!("{}\n", git::compact_diff(&raw, 500))
+     };
+ 
+-    timer.track("gh pr diff", "contextzip gh pr diff", &raw, &filtered);
++    timer.emit("gh pr diff", "contextzip gh pr diff", &raw, &filtered, "cli");
+     Ok(())
+ }
+ 
+@@ -1194,7 +1190,7 @@ fn pr_action(action: &str, args: &[String], _verbose: u8) -> Result<()> {
+         .unwrap_or_default();
+ 
+     let filtered = ok_confirmation(action, &pr_num);
+-    println!("{}", filtered);
++    let filtered_out = format!("{filtered}\n");
+ 
+     // Use stdout or pr_num as raw input
+     let raw = if !stdout.trim().is_empty() {
+@@ -1203,11 +1199,12 @@ fn pr_action(action: &str, args: &[String], _verbose: u8) -> Result<()> {
+         pr_num.clone()
+     };
+ 
+-    timer.track(
++    timer.emit(
+         &format!("gh pr {}", subcmd),
+         &format!("contextzip gh pr {}", subcmd),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+     Ok(())
+ }
+diff --git a/src/git.rs b/src/git.rs
+index fa875ed..ca9d7fe 100644
+--- a/src/git.rs
++++ b/src/git.rs
+@@ -438,13 +438,13 @@ fn run_log(
+ 
+     // Post-process: truncate long messages, cap lines only if RTK set the default
+     let filtered = filter_log_output(&stdout, limit, user_set_limit, has_format_flag);
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("git log {}", args.join(" ")),
+         &format!("contextzip git log {}", args.join(" ")),
+         &stdout,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -744,13 +744,12 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
+ 
+         // Apply minimal filtering: strip ANSI, remove hints, empty lines
+         let filtered = filter_status_with_args(&stdout);
+-        print!("{}", filtered);
+-
+-        timer.track(
++        timer.emit(
+             &format!("git status {}", args.join(" ")),
+             &format!("contextzip git status {}", args.join(" ")),
+             &stdout,
+             &filtered,
++            "cli",
+         );
+ 
+         return Ok(());
+@@ -780,16 +779,10 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
+     }
+ 
+     let formatted = format_status_output(&stdout);
+-
+-    println!("{}", formatted);
++    let formatted_out = format!("{formatted}\n");
+ 
+     // Track for statistics
+-    timer.track(
+-        "git status",
+-        "contextzip git status",
+-        &raw_output,
+-        &formatted,
+-    );
++    timer.emit("git status", "contextzip git status", &raw_output, &formatted_out, "cli");
+ 
+     Ok(())
+ }
+@@ -841,13 +834,13 @@ fn run_add(args: &[String], verbose: u8, global_args: &[String]) -> Result<()> {
+             }
+         };
+ 
+-        println!("{}", compact);
+-
+-        timer.track(
++        let compact_out = format!("{compact}\n");
++        timer.emit(
+             &format!("git add {}", args.join(" ")),
+             &format!("contextzip git add {}", args.join(" ")),
+             &raw_output,
+-            &compact,
++            &compact_out,
++            "cli",
+         );
+     } else {
+         let stderr = String::from_utf8_lossy(&output.stderr);
+@@ -913,21 +906,21 @@ fn run_commit(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
+             "ok".to_string()
+         };
+ 
+-        println!("{}", compact);
+-
+-        timer.track(
++        let compact_out = format!("{compact}\n");
++        timer.emit(
+             &original_cmd,
+             "contextzip git commit",
+             &raw_output,
+-            &compact,
++            &compact_out,
++            "cli",
+         );
+     } else if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+-        println!("ok (nothing to commit)");
+-        timer.track(
++        timer.emit(
+             &original_cmd,
+             "contextzip git commit",
+             &raw_output,
+-            "ok (nothing to commit)",
++            "ok (nothing to commit)\n",
++            "cli",
+         );
+     } else {
+         if !stderr.trim().is_empty() {
+@@ -992,13 +985,13 @@ fn run_push(args: &[String], verbose: u8, global_args: &[String]) -> Result<()>
+             }
+         };
+ 
+-        println!("{}", compact);
+-
+-        timer.track(
++        let compact_out = format!("{compact}\n");
++        timer.emit(
+             &format!("git push {}", args.join(" ")),
+             &format!("contextzip git push {}", args.join(" ")),
+             &raw,
+-            &compact,
++            &compact_out,
++            "cli",
+         );
+     } else {
+         eprintln!("FAILED: git push");
+@@ -1082,13 +1075,13 @@ fn run_pull(args: &[String], verbose: u8, global_args: &[String]) -> Result<()>
+                 }
+             };
+ 
+-        println!("{}", compact);
+-
+-        timer.track(
++        let compact_out = format!("{compact}\n");
++        timer.emit(
+             &format!("git pull {}", args.join(" ")),
+             &format!("contextzip git pull {}", args.join(" ")),
+             &raw_output,
+-            &compact,
++            &compact_out,
++            "cli",
+         );
+     } else {
+         eprintln!("FAILED: git pull");
+@@ -1253,13 +1246,13 @@ fn run_branch(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
+     }
+ 
+     let filtered = filter_branch_output(&stdout);
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("git branch {}", args.join(" ")),
+         &format!("contextzip git branch {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -1361,8 +1354,8 @@ fn run_fetch(args: &[String], verbose: u8, global_args: &[String]) -> Result<()>
+         "ok fetched".to_string()
+     };
+ 
+-    println!("{}", msg);
+-    timer.track("git fetch", "contextzip git fetch", &raw, &msg);
++    let msg_out = format!("{msg}\n");
++    timer.emit("git fetch", "contextzip git fetch", &raw, &msg_out, "cli");
+ 
+     Ok(())
+ }
+@@ -1389,19 +1382,18 @@ fn run_stash(
+             let raw = stdout.to_string();
+ 
+             if stdout.trim().is_empty() {
+-                let msg = "No stashes";
+-                println!("{}", msg);
+-                timer.track("git stash list", "contextzip git stash list", &raw, msg);
++                timer.emit("git stash list", "contextzip git stash list", &raw, "No stashes\n", "cli");
+                 return Ok(());
+             }
+ 
+             let filtered = filter_stash_list(&stdout);
+-            println!("{}", filtered);
+-            timer.track(
++            let filtered_out = format!("{filtered}\n");
++            timer.emit(
+                 "git stash list",
+                 "contextzip git stash list",
+                 &raw,
+-                &filtered,
++                &filtered_out,
++                "cli",
+             );
+         }
+         Some("show") => {
+@@ -1415,20 +1407,18 @@ fn run_stash(
+             let raw = stdout.to_string();
+ 
+             let filtered = if stdout.trim().is_empty() {
+-                let msg = "Empty stash";
+-                println!("{}", msg);
+-                msg.to_string()
++                "Empty stash".to_string()
+             } else {
+-                let compacted = compact_diff(&stdout, 100);
+-                println!("{}", compacted);
+-                compacted
++                compact_diff(&stdout, 100)
+             };
+ 
+-            timer.track(
++            let filtered_out = format!("{filtered}\n");
++            timer.emit(
+                 "git stash show",
+                 "contextzip git stash show",
+                 &raw,
+-                &filtered,
++                &filtered_out,
++                "cli",
+             );
+         }
+         Some("pop") | Some("apply") | Some("drop") | Some("push") => {
+@@ -1621,12 +1611,13 @@ fn run_worktree(args: &[String], verbose: u8, global_args: &[String]) -> Result<
+     let raw = stdout.to_string();
+ 
+     let filtered = filter_worktree_list(&stdout);
+-    println!("{}", filtered);
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         "git worktree list",
+         "contextzip git worktree",
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/go_cmd.rs b/src/go_cmd.rs
+index 417c284..f6e47f7 100644
+--- a/src/go_cmd.rs
++++ b/src/go_cmd.rs
+@@ -69,22 +69,22 @@ pub fn run_test(args: &[String], verbose: u8) -> Result<()> {
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+     let filtered = filter_go_test_json(&stdout);
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_test", exit_code) {
+-        println!("{}\n{}", filtered, hint);
+-    } else {
+-        println!("{}", filtered);
+-    }
+-
+     // Include stderr if present (build errors, etc.)
+     if !stderr.trim().is_empty() {
+         eprintln!("{}", stderr.trim());
+     }
+ 
+-    timer.track(
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_test", exit_code) {
++        format!("{filtered}\n{hint}\n")
++    } else {
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         &format!("go test {}", args.join(" ")),
+         &format!("contextzip go test {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+@@ -123,21 +123,23 @@ pub fn run_build(args: &[String], verbose: u8) -> Result<()> {
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+     let filtered = filter_go_build(&raw);
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_build", exit_code) {
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_build", exit_code) {
+         if !filtered.is_empty() {
+-            println!("{}\n{}", filtered, hint);
++            format!("{filtered}\n{hint}\n")
+         } else {
+-            println!("{}", hint);
++            format!("{hint}\n")
+         }
+     } else if !filtered.is_empty() {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    } else {
++        String::new()
++    };
++    timer.emit(
+         &format!("go build {}", args.join(" ")),
+         &format!("contextzip go build {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+@@ -176,21 +178,23 @@ pub fn run_vet(args: &[String], verbose: u8) -> Result<()> {
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+     let filtered = filter_go_vet(&raw);
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_vet", exit_code) {
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_vet", exit_code) {
+         if !filtered.is_empty() {
+-            println!("{}\n{}", filtered, hint);
++            format!("{filtered}\n{hint}\n")
+         } else {
+-            println!("{}", hint);
++            format!("{hint}\n")
+         }
+     } else if !filtered.is_empty() {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    } else {
++        String::new()
++    };
++    timer.emit(
+         &format!("go vet {}", args.join(" ")),
+         &format!("contextzip go vet {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/golangci_cmd.rs b/src/golangci_cmd.rs
+index fa54205..862e4f2 100644
+--- a/src/golangci_cmd.rs
++++ b/src/golangci_cmd.rs
+@@ -68,18 +68,18 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+ 
+     let filtered = filter_golangci_json(&stdout);
+ 
+-    println!("{}", filtered);
+-
+     // Include stderr if present (config errors, etc.)
+     if !stderr.trim().is_empty() && verbose > 0 {
+         eprintln!("{}", stderr.trim());
+     }
+ 
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("golangci-lint {}", args.join(" ")),
+         &format!("contextzip golangci-lint {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // golangci-lint: exit 0 = clean, exit 1 = lint issues, exit 2+ = config/build error
+diff --git a/src/grep_cmd.rs b/src/grep_cmd.rs
+index 5ea4bb1..6afb10f 100644
+--- a/src/grep_cmd.rs
++++ b/src/grep_cmd.rs
+@@ -63,12 +63,13 @@ pub fn run(
+             }
+         }
+         let msg = format!("0 matches for '{}'", pattern);
+-        println!("{}", msg);
+-        timer.track(
++        let msg_out = format!("{msg}\n");
++        timer.emit(
+             &format!("grep -rn '{}' {}", pattern, path),
+             "contextzip grep",
+             &raw_output,
+-            &msg,
++            &msg_out,
++            "cli",
+         );
+         if exit_code != 0 {
+             std::process::exit(exit_code);
+@@ -138,12 +139,12 @@ pub fn run(
+         compressed.push_str(&format!("... +{}\n", total - shown));
+     }
+ 
+-    print!("{}", compressed);
+-    timer.track(
++    timer.emit(
+         &format!("grep -rn '{}' {}", pattern, path),
+         "contextzip grep",
+         &raw_output,
+         &compressed,
++        "cli",
+     );
+ 
+     if exit_code != 0 {
+diff --git a/src/gt_cmd.rs b/src/gt_cmd.rs
+index 4957f6e..c75e751 100644
+--- a/src/gt_cmd.rs
++++ b/src/gt_cmd.rs
+@@ -59,23 +59,23 @@ fn run_gt_filtered(
+         filter_fn(&clean)
+     };
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, tee_label, exit_code) {
+-        println!("{}\n{}", output, hint);
+-    } else {
+-        println!("{}", output);
+-    }
+-
+     if !stderr.trim().is_empty() {
+         eprintln!("{}", stderr.trim());
+     }
+ 
++    let output_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, tee_label, exit_code) {
++        format!("{output}\n{hint}\n")
++    } else {
++        format!("{output}\n")
++    };
++
+     let label = if args.is_empty() {
+         format!("gt {}", subcmd_str)
+     } else {
+         format!("gt {} {}", subcmd_str, args.join(" "))
+     };
+     let cz_label = format!("contextzip {}", label);
+-    timer.track(&label, &cz_label, &raw, &output);
++    timer.emit(&label, &cz_label, &raw, &output_out, "cli");
+ 
+     if !cmd_output.status.success() {
+         std::process::exit(exit_code);
+diff --git a/src/json_cmd.rs b/src/json_cmd.rs
+index 36afce8..9993946 100644
+--- a/src/json_cmd.rs
++++ b/src/json_cmd.rs
+@@ -46,12 +46,13 @@ pub fn run(file: &Path, max_depth: usize, verbose: u8) -> Result<()> {
+         .with_context(|| format!("Failed to read file: {}", file.display()))?;
+ 
+     let schema = filter_json_string(&content, max_depth)?;
+-    println!("{}", schema);
+-    timer.track(
++    let schema_out = format!("{schema}\n");
++    timer.emit(
+         &format!("cat {}", file.display()),
+         "contextzip json",
+         &content,
+-        &schema,
++        &schema_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -71,8 +72,8 @@ pub fn run_stdin(max_depth: usize, verbose: u8) -> Result<()> {
+         .context("Failed to read from stdin")?;
+ 
+     let schema = filter_json_string(&content, max_depth)?;
+-    println!("{}", schema);
+-    timer.track("cat - (stdin)", "contextzip json -", &content, &schema);
++    let schema_out = format!("{schema}\n");
++    timer.emit("cat - (stdin)", "contextzip json -", &content, &schema_out, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/lint_cmd.rs b/src/lint_cmd.rs
+index 42ff239..5da632f 100644
+--- a/src/lint_cmd.rs
++++ b/src/lint_cmd.rs
+@@ -206,17 +206,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         .status
+         .code()
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "lint", exit_code) {
+-        println!("{}\n{}", filtered, hint);
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "lint", exit_code) {
++        format!("{filtered}\n{hint}\n")
+     } else {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         &format!("{} {}", linter, args.join(" ")),
+         &format!("contextzip lint {} {}", linter, args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     if !output.status.success() {
+diff --git a/src/log_cmd.rs b/src/log_cmd.rs
+index 5d091dd..01f6f59 100644
+--- a/src/log_cmd.rs
++++ b/src/log_cmd.rs
+@@ -28,12 +28,13 @@ pub fn run_file(file: &Path, verbose: u8) -> Result<()> {
+ 
+     let content = fs::read_to_string(file)?;
+     let result = analyze_logs(&content);
+-    println!("{}", result);
+-    timer.track(
++    let result_out = format!("{result}\n");
++    timer.emit(
+         &format!("cat {}", file.display()),
+         "contextzip log",
+         &content,
+-        &result,
++        &result_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -50,9 +51,8 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
+     }
+ 
+     let result = analyze_logs(&content);
+-    println!("{}", result);
+-
+-    timer.track("log (stdin)", "contextzip log (stdin)", &content, &result);
++    let result_out = format!("{result}\n");
++    timer.emit("log (stdin)", "contextzip log (stdin)", &content, &result_out, "cli");
+ 
+     Ok(())
+ }
+diff --git a/src/ls.rs b/src/ls.rs
+index e70a9e5..1513636 100644
+--- a/src/ls.rs
++++ b/src/ls.rs
+@@ -109,12 +109,12 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+     } else {
+         paths.join(" ")
+     };
+-    print!("{}", filtered);
+-    timer.track(
++    timer.emit(
+         &format!("ls -la {}", target_display),
+         "contextzip ls",
+         &raw,
+         &filtered,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/main.rs b/src/main.rs
+index 237d000..c2e86ad 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1162,17 +1162,17 @@ fn run_fallback(parse_error: clap::Error) -> Result<()> {
+                 };
+ 
+                 let filtered = toml_filter::apply_filter(filter, &stdout_raw);
+-                println!("{}", filtered);
+-                if let Some(hint) = tee_hint {
+-                    println!("{}", hint);
+-                }
+-
+-                timer.track(
++                let filtered_out = format!("{filtered}\n");
++                timer.emit(
+                     &raw_command,
+                     &format!("contextzip:toml {}", raw_command),
+                     &stdout_raw,
+-                    &filtered,
++                    &filtered_out,
++                    "cli",
+                 );
++                if let Some(hint) = tee_hint {
++                    println!("{}", hint);
++                }
+                 tracking::record_parse_failure_silent(&raw_command, &error_message, true);
+ 
+                 if !output.status.success() {
+@@ -1933,12 +1933,13 @@ fn main() -> Result<()> {
+             } else {
+                 raw.clone()
+             };
+-            println!("{}", filtered);
+-            timer.track(
++            let filtered_out = format!("{filtered}\n");
++            timer.emit(
+                 &format!("web {}", url),
+                 &format!("contextzip web {}", url),
+                 &raw,
+-                &filtered,
++                &filtered_out,
++                "cli",
+             );
+         }
+ 
+diff --git a/src/mypy_cmd.rs b/src/mypy_cmd.rs
+index 48fc8b6..c541252 100644
+--- a/src/mypy_cmd.rs
++++ b/src/mypy_cmd.rs
+@@ -34,13 +34,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+ 
+     let filtered = filter_mypy_output(&clean);
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("mypy {}", args.join(" ")),
+         &format!("contextzip mypy {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     if !output.status.success() {
+diff --git a/src/next_cmd.rs b/src/next_cmd.rs
+index f0a7e83..857c777 100644
+--- a/src/next_cmd.rs
++++ b/src/next_cmd.rs
+@@ -37,9 +37,8 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+ 
+     let filtered = filter_next_build(&raw);
+ 
+-    println!("{}", filtered);
+-
+-    timer.track("next build", "contextzip next build", &raw, &filtered);
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("next build", "contextzip next build", &raw, &filtered_out, "cli");
+ 
+     // Preserve exit code for CI/CD
+     if !output.status.success() {
+diff --git a/src/npm_cmd.rs b/src/npm_cmd.rs
+index 29a4ac0..af64569 100644
+--- a/src/npm_cmd.rs
++++ b/src/npm_cmd.rs
+@@ -121,13 +121,13 @@ pub fn run(args: &[String], verbose: u8, skip_env: bool) -> Result<()> {
+     } else {
+         filter_npm_output(&raw)
+     };
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("npm {}", args.join(" ")),
+         &format!("contextzip npm {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     if !output.status.success() {
+diff --git a/src/pip_cmd.rs b/src/pip_cmd.rs
+index bdfda72..174f7bc 100644
+--- a/src/pip_cmd.rs
++++ b/src/pip_cmd.rs
+@@ -42,11 +42,12 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         }
+     };
+ 
+-    timer.track(
++    timer.emit(
+         &format!("{} {}", base_cmd, args.join(" ")),
+         &format!("contextzip {} {}", base_cmd, args.join(" ")),
+         &cmd_str,
+         &filtered,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -77,8 +78,7 @@ fn run_list(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, Str
+     let stderr = String::from_utf8_lossy(&output.stderr);
+     let raw = format!("{}\n{}", stdout, stderr);
+ 
+-    let filtered = filter_pip_list(&stdout);
+-    println!("{}", filtered);
++    let filtered = format!("{}\n", filter_pip_list(&stdout));
+ 
+     if !output.status.success() {
+         std::process::exit(output.status.code().unwrap_or(1));
+@@ -112,8 +112,7 @@ fn run_outdated(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String,
+     let stderr = String::from_utf8_lossy(&output.stderr);
+     let raw = format!("{}\n{}", stdout, stderr);
+ 
+-    let filtered = filter_pip_outdated(&stdout);
+-    println!("{}", filtered);
++    let filtered = format!("{}\n", filter_pip_outdated(&stdout));
+ 
+     if !output.status.success() {
+         std::process::exit(output.status.code().unwrap_or(1));
+@@ -145,8 +144,7 @@ fn run_install(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String,
+     let stderr = String::from_utf8_lossy(&output.stderr);
+     let raw = format!("{}\n{}", stdout, stderr);
+ 
+-    let filtered = crate::pkg_cmd::compress_pkg_log(&raw);
+-    println!("{}", filtered);
++    let filtered = format!("{}\n", crate::pkg_cmd::compress_pkg_log(&raw));
+ 
+     if !output.status.success() {
+         std::process::exit(output.status.code().unwrap_or(1));
+diff --git a/src/playwright_cmd.rs b/src/playwright_cmd.rs
+index 463726e..da5cea4 100644
+--- a/src/playwright_cmd.rs
++++ b/src/playwright_cmd.rs
+@@ -314,13 +314,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         }
+     };
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("playwright {}", args.join(" ")),
+         &format!("contextzip playwright {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/pnpm_cmd.rs b/src/pnpm_cmd.rs
+index 8b69933..3da9b1c 100644
+--- a/src/pnpm_cmd.rs
++++ b/src/pnpm_cmd.rs
+@@ -336,13 +336,13 @@ fn run_list(depth: usize, args: &[String], verbose: u8) -> Result<()> {
+         }
+     };
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("pnpm list --depth={}", depth),
+         &format!("contextzip pnpm list --depth={}", depth),
+         &stdout,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -388,17 +388,17 @@ fn run_outdated(args: &[String], verbose: u8) -> Result<()> {
+         }
+     };
+ 
+-    if filtered.trim().is_empty() {
+-        println!("All packages up-to-date");
++    let filtered_out = if filtered.trim().is_empty() {
++        "All packages up-to-date\n".to_string()
+     } else {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         "pnpm outdated",
+         "contextzip pnpm outdated",
+         &combined,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+@@ -444,13 +444,13 @@ fn run_install(packages: &[String], args: &[String], verbose: u8) -> Result<()>
+     let combined = format!("{}{}", stdout, stderr);
+     let filtered = filter_pnpm_install(&combined);
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("pnpm install {}", packages.join(" ")),
+         &format!("contextzip pnpm install {}", packages.join(" ")),
+         &combined,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/prettier_cmd.rs b/src/prettier_cmd.rs
+index 58890f5..1722279 100644
+--- a/src/prettier_cmd.rs
++++ b/src/prettier_cmd.rs
+@@ -44,14 +44,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+     }
+ 
+     let filtered = filter_prettier_output(&raw);
+-
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("prettier {}", args.join(" ")),
+         &format!("contextzip prettier {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/prisma_cmd.rs b/src/prisma_cmd.rs
+index 8f22835..c2379e3 100644
+--- a/src/prisma_cmd.rs
++++ b/src/prisma_cmd.rs
+@@ -71,13 +71,8 @@ fn run_generate(args: &[String], verbose: u8) -> Result<()> {
+     }
+ 
+     let filtered = filter_prisma_generate(&raw);
+-    println!("{}", filtered);
+-    timer.track(
+-        "prisma generate",
+-        "contextzip prisma generate",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("prisma generate", "contextzip prisma generate", &raw, &filtered_out, "cli");
+ 
+     Ok(())
+ }
+@@ -138,13 +133,8 @@ fn run_migrate(subcommand: MigrateSubcommand, args: &[String], verbose: u8) -> R
+         MigrateSubcommand::Deploy => filter_migrate_deploy(&raw),
+     };
+ 
+-    println!("{}", filtered);
+-    timer.track(
+-        cmd_name,
+-        &format!("contextzip {}", cmd_name),
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(cmd_name, &format!("contextzip {}", cmd_name), &raw, &filtered_out, "cli");
+ 
+     Ok(())
+ }
+@@ -182,13 +172,8 @@ fn run_db_push(args: &[String], verbose: u8) -> Result<()> {
+     }
+ 
+     let filtered = filter_db_push(&raw);
+-    println!("{}", filtered);
+-    timer.track(
+-        "prisma db push",
+-        "contextzip prisma db push",
+-        &raw,
+-        &filtered,
+-    );
++    let filtered_out = format!("{filtered}\n");
++    timer.emit("prisma db push", "contextzip prisma db push", &raw, &filtered_out, "cli");
+ 
+     Ok(())
+ }
+diff --git a/src/psql_cmd.rs b/src/psql_cmd.rs
+index 6736012..dab0925 100644
+--- a/src/psql_cmd.rs
++++ b/src/psql_cmd.rs
+@@ -49,17 +49,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+ 
+     let filtered = filter_psql_output(&stdout);
+ 
+-    if let Some(hint) = crate::tee::tee_and_hint(&stdout, "psql", exit_code) {
+-        println!("{}\n{}", filtered, hint);
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&stdout, "psql", exit_code) {
++        format!("{filtered}\n{hint}\n")
+     } else {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         &format!("psql {}", args.join(" ")),
+         &format!("contextzip psql {}", args.join(" ")),
+         &stdout,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/pytest_cmd.rs b/src/pytest_cmd.rs
+index 732536f..0bd2843 100644
+--- a/src/pytest_cmd.rs
++++ b/src/pytest_cmd.rs
+@@ -56,22 +56,22 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         .status
+         .code()
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "pytest", exit_code) {
+-        println!("{}\n{}", filtered, hint);
+-    } else {
+-        println!("{}", filtered);
+-    }
+-
+     // Include stderr if present (import errors, etc.)
+     if !stderr.trim().is_empty() {
+         eprintln!("{}", stderr.trim());
+     }
+ 
+-    timer.track(
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "pytest", exit_code) {
++        format!("{filtered}\n{hint}\n")
++    } else {
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         &format!("pytest {}", args.join(" ")),
+         &format!("contextzip pytest {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/read.rs b/src/read.rs
+index 905d2ef..6fafde1 100644
+--- a/src/read.rs
++++ b/src/read.rs
+@@ -58,12 +58,13 @@ pub fn run(
+     } else {
+         filtered.clone()
+     };
+-    println!("{}", compressed);
+-    timer.track(
++    let compressed_out = format!("{compressed}\n");
++    timer.emit(
+         &format!("cat {}", file.display()),
+         "contextzip read",
+         &content,
+-        &compressed,
++        &compressed_out,
++        "cli",
+     );
+     Ok(())
+ }
+@@ -122,9 +123,8 @@ pub fn run_stdin(
+     } else {
+         filtered.clone()
+     };
+-    println!("{}", compressed);
+-
+-    timer.track("cat - (stdin)", "contextzip read -", &content, &compressed);
++    let compressed_out = format!("{compressed}\n");
++    timer.emit("cat - (stdin)", "contextzip read -", &content, &compressed_out, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/ruff_cmd.rs b/src/ruff_cmd.rs
+index 2965de5..26bd69d 100644
+--- a/src/ruff_cmd.rs
++++ b/src/ruff_cmd.rs
+@@ -98,13 +98,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         raw.trim().to_string()
+     };
+ 
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("ruff {}", args.join(" ")),
+         &format!("contextzip ruff {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve exit code for CI/CD
+diff --git a/src/runner.rs b/src/runner.rs
+index fde4570..74b0993 100644
+--- a/src/runner.rs
++++ b/src/runner.rs
+@@ -59,12 +59,12 @@ pub fn run_err(command: &str, verbose: u8) -> Result<()> {
+         .status
+         .code()
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "err", exit_code) {
+-        println!("{}\n{}", summary, hint);
++    let printed = if let Some(hint) = crate::tee::tee_and_hint(&raw, "err", exit_code) {
++        format!("{summary}\n{hint}\n")
+     } else {
+-        println!("{}", summary);
+-    }
+-    timer.track(command, "contextzip run-err", &raw, &summary);
++        format!("{summary}\n")
++    };
++    timer.emit(command, "contextzip run-err", &raw, &printed, "cli");
+     Ok(())
+ }
+ 
+@@ -100,12 +100,12 @@ pub fn run_test(command: &str, verbose: u8) -> Result<()> {
+         .code()
+         .unwrap_or(if output.status.success() { 0 } else { 1 });
+     let summary = extract_test_summary(&raw, command);
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "test", exit_code) {
+-        println!("{}\n{}", summary, hint);
++    let printed = if let Some(hint) = crate::tee::tee_and_hint(&raw, "test", exit_code) {
++        format!("{summary}\n{hint}\n")
+     } else {
+-        println!("{}", summary);
+-    }
+-    timer.track(command, "contextzip run-test", &raw, &summary);
++        format!("{summary}\n")
++    };
++    timer.emit(command, "contextzip run-test", &raw, &printed, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/summary.rs b/src/summary.rs
+index 27d8ff4..4a6d868 100644
+--- a/src/summary.rs
++++ b/src/summary.rs
+@@ -46,8 +46,8 @@ pub fn run(command: &str, verbose: u8) -> Result<()> {
+     let raw = format!("{}\n{}", stdout, stderr);
+ 
+     let summary = summarize_output(&raw, command, output.status.success());
+-    println!("{}", summary);
+-    timer.track(command, "contextzip summary", &raw, &summary);
++    let summary_out = format!("{summary}\n");
++    timer.emit(command, "contextzip summary", &raw, &summary_out, "cli");
+     Ok(())
+ }
+ 
+diff --git a/src/tracking.rs b/src/tracking.rs
+index ee9c4fa..19d1c17 100644
+--- a/src/tracking.rs
++++ b/src/tracking.rs
+@@ -1295,6 +1295,39 @@ impl TimedExecution {
+             let _ = tracker.record(original_cmd, contextzip_cmd, 0, 0, elapsed_ms);
+         }
+     }
++
++    /// Print the better of (raw input, filtered output) to stdout, then track
++    /// the choice. Enforces the never-inflate guard for every command that
++    /// routes through it: a filter can never make output larger than raw.
++    /// `CONTEXTZIP_NO_INFLATE_GUARD=1` disables the guard for debugging.
++    pub fn emit(
++        &self,
++        original_cmd: &str,
++        contextzip_cmd: &str,
++        input: &str,
++        filtered: &str,
++        feature: &str,
++    ) {
++        let chosen = if std::env::var_os("CONTEXTZIP_NO_INFLATE_GUARD").is_some() {
++            filtered
++        } else {
++            choose_output(input, filtered)
++        };
++        print!("{chosen}");
++        self.track_with_feature(original_cmd, contextzip_cmd, input, chosen, feature);
++    }
++}
++
++/// Never-inflate guard: return the filtered text if it is no larger than
++/// the raw input; otherwise return the raw input. Compared on byte length
++/// of the (already ANSI-stripped) input the filter received, so ANSI
++/// removal still counts as a win. Ties go to filtered.
++pub fn choose_output<'a>(input: &'a str, filtered: &'a str) -> &'a str {
++    if filtered.len() <= input.len() {
++        filtered
++    } else {
++        input
++    }
+ }
+ 
+ /// Format OsString args for tracking display.
+@@ -1846,4 +1879,26 @@ mod tests {
+         let quiet = std::env::var("CONTEXTZIP_QUIET").is_ok();
+         assert!(!quiet);
+     }
++
++    #[test]
++    fn choose_output_passes_through_when_filter_inflates() {
++        let input = "short raw output\n";
++        let filtered = "short raw output\nplus filter metadata that makes it bigger\n";
++        assert_eq!(choose_output(input, filtered), input);
++    }
++
++    #[test]
++    fn choose_output_keeps_filtered_when_smaller() {
++        let input = "a very long line repeated many times and then some more\n";
++        let filtered = "compact\n";
++        assert_eq!(choose_output(input, filtered), filtered);
++    }
++
++    #[test]
++    fn choose_output_ties_go_to_filtered() {
++        // Equal length: prefer filtered (already ANSI-stripped/normalized).
++        let input = "abcd";
++        let filtered = "wxyz";
++        assert_eq!(choose_output(input, filtered), filtered);
++    }
+ }
+diff --git a/src/tree.rs b/src/tree.rs
+index f04b652..1bf727c 100644
+--- a/src/tree.rs
++++ b/src/tree.rs
+@@ -95,8 +95,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+         );
+     }
+ 
+-    print!("{}", filtered);
+-    timer.track("tree", "contextzip tree", &raw, &filtered);
++    timer.emit("tree", "contextzip tree", &raw, &filtered, "cli");
+ 
+     Ok(())
+ }
+diff --git a/src/tsc_cmd.rs b/src/tsc_cmd.rs
+index 46b3b90..778c711 100644
+--- a/src/tsc_cmd.rs
++++ b/src/tsc_cmd.rs
+@@ -37,17 +37,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+     let filtered = filter_tsc_output(&raw);
+ 
+     let exit_code = output.status.code().unwrap_or(1);
+-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "tsc", exit_code) {
+-        println!("{}\n{}", filtered, hint);
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "tsc", exit_code) {
++        format!("{filtered}\n{hint}\n")
+     } else {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track(
++        format!("{filtered}\n")
++    };
++    timer.emit(
+         &format!("tsc {}", args.join(" ")),
+         &format!("contextzip tsc {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     // Preserve tsc exit code for CI/CD compatibility
+diff --git a/src/vitest_cmd.rs b/src/vitest_cmd.rs
+index 1d8bf53..5983795 100644
+--- a/src/vitest_cmd.rs
++++ b/src/vitest_cmd.rs
+@@ -261,13 +261,12 @@ fn run_vitest(args: &[String], verbose: u8) -> Result<()> {
+     };
+ 
+     let exit_code = output.status.code().unwrap_or(1);
+-    if let Some(hint) = crate::tee::tee_and_hint(&combined, "vitest_run", exit_code) {
+-        println!("{}\n{}", filtered, hint);
++    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&combined, "vitest_run", exit_code) {
++        format!("{filtered}\n{hint}\n")
+     } else {
+-        println!("{}", filtered);
+-    }
+-
+-    timer.track("vitest run", "contextzip vitest run", &combined, &filtered);
++        format!("{filtered}\n")
++    };
++    timer.emit("vitest run", "contextzip vitest run", &combined, &filtered_out, "cli");
+ 
+     // Propagate original exit code
+     std::process::exit(exit_code)
+diff --git a/src/wc_cmd.rs b/src/wc_cmd.rs
+index 81df3da..80efead 100644
+--- a/src/wc_cmd.rs
++++ b/src/wc_cmd.rs
+@@ -41,13 +41,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
+     // Detect which columns the user requested
+     let mode = detect_mode(args);
+     let filtered = filter_wc_output(&raw, &mode);
+-    println!("{}", filtered);
+-
+-    timer.track(
++    let filtered_out = format!("{filtered}\n");
++    timer.emit(
+         &format!("wc {}", args.join(" ")),
+         &format!("contextzip wc {}", args.join(" ")),
+         &raw,
+-        &filtered,
++        &filtered_out,
++        "cli",
+     );
+ 
+     Ok(())
+diff --git a/src/wget_cmd.rs b/src/wget_cmd.rs
+index 348cf3b..3f009f8 100644
+--- a/src/wget_cmd.rs
++++ b/src/wget_cmd.rs
+@@ -38,22 +38,24 @@ pub fn run(url: &str, args: &[String], verbose: u8) -> Result<()> {
+             filename,
+             format_size(size)
+         );
+-        println!("{}", msg);
+-        timer.track(
++        let msg_out = format!("{msg}\n");
++        timer.emit(
+             &format!("wget {}", url),
+             "contextzip wget",
+             &raw_output,
+-            &msg,
++            &msg_out,
++            "cli",
+         );
+     } else {
+         let error = parse_error(&stderr, &stdout);
+         let msg = format!("{} FAILED: {}", compact_url(url), error);
+-        println!("{}", msg);
+-        timer.track(
++        let msg_out = format!("{msg}\n");
++        timer.emit(
+             &format!("wget {}", url),
+             "contextzip wget",
+             &raw_output,
+-            &msg,
++            &msg_out,
++            "cli",
+         );
+         std::process::exit(output.status.code().unwrap_or(1));
+     }
+@@ -105,23 +107,24 @@ pub fn run_stdout(url: &str, args: &[String], verbose: u8) -> Result<()> {
+                 compressed.push_str(&format!("{}\n", line));
+             }
+         }
+-        print!("{}", compressed);
+-        timer.track(
++        timer.emit(
+             &format!("wget -O - {}", url),
+             "contextzip wget -o",
+             &raw_output,
+             &compressed,
++            "cli",
+         );
+     } else {
+         let stderr = String::from_utf8_lossy(&output.stderr);
+         let error = parse_error(&stderr, "");
+         let msg = format!("{} FAILED: {}", compact_url(url), error);
+-        println!("{}", msg);
+-        timer.track(
++        let msg_out = format!("{msg}\n");
++        timer.emit(
+             &format!("wget -O - {}", url),
+             "contextzip wget -o",
+             &stderr,
+-            &msg,
++            &msg_out,
++            "cli",
+         );
+         std::process::exit(output.status.code().unwrap_or(1));
+     }

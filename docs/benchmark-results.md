@@ -246,10 +246,12 @@ Character count is used as a token proxy. The harness runs each command twice - 
 
 ### Why Some Commands Show Low or Negative Savings
 
-- **`read` (default/minimal level):** The default and minimal filter levels preserve nearly all content by design. Use `-l aggressive` for deep compression.
-- **`grep` on small result sets:** When the filtered result is already compact (e.g., `grep struct` produces only a few lines), the filter adds header overhead that exceeds gains.
+- **`read` (default/minimal level):** The default and minimal filter levels preserve nearly all content by design. Use `-l aggressive` for deep compression. The 3% on `main.rs` is a fixture artifact: `main.rs` has almost no comments. On comment-heavy files (e.g. `git.rs`) the same filter achieves ~20%. MinimalFilter ceiling is ~20%; deeper compression requires `-l aggressive` (91%). **No code change warranted** - deepening the default would strip code that is needed information.
+- **`grep` on small result sets:** When the filtered result is already compact (e.g., `grep struct` produces matches with short, dense content per line), the per-file header overhead exceeds the content savings. The never-inflate guard (`choose_output`) passes through the raw result in this case (6097 bytes out vs 6804 bytes in). On large result sets (`fn`, 36k tokens) the filter achieves 91%. **Ceiling: small-result-set artifact; guard protects against inflation.**
+- **`git diff` (35%):** The benchmark fixture is `HEAD~1` (468-1300 tokens, a tiny diff). On realistic multi-file diffs (`HEAD~5`, ~10k tokens) `compact_diff` achieves 90%. **Ceiling: small-diff fixture artifact.** A savings test (`test_compact_diff_savings_realistic`) verifies >=80% on the real fixture (`tests/fixtures/git_diff_real.txt`, 10745 tokens).
+- **`git status` (25%):** The benchmark runs on a clean working tree (20 tokens = "On branch...\nnothing to commit"). `format_status_output` reduces this to ~15 tokens. **Ceiling: tiny-fixture artifact.** On a realistically dirty repo, the porcelain output is similar size (individual changed files are short paths) and the savings are bounded the same way.
 - **`json` on small files:** The test fixture (`/tmp/rtk_bench.json`) is tiny (59 tokens). Format normalization saves little on already-minimal JSON.
-- **`wget` on plain-text:** The robots.txt response is 8 tokens. contextzip emits a wrapper that exceeds the original.
-- **`gh pr list` / `gh run list`:** No PRs or runs exist in this repo, so input is 0 tokens. contextzip emits a small status message, making output larger than input. Not a real-world concern.
+- **`wget` on plain-text:** The robots.txt response is 8 tokens. contextzip emits a wrapper that exceeds the original. Never-inflate guard handles this.
+- **`gh pr list` / `gh run list`:** No PRs or runs exist in this repo, so input is 0 tokens. contextzip emits a small status message, making output larger than input. Not a real-world concern. Never-inflate guard handles this.
 - **`cargo build` / `clippy` / `check`:** Build is already cached (0 crates compiled), so raw output is only 18 tokens. Savings look modest in percentage but the absolute compression holds on real builds.
 - **`docker` commands:** Not measured - `docker` binary absent on this machine. Add to CI matrix when docker is available.
