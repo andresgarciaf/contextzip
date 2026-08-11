@@ -1295,6 +1295,41 @@ impl TimedExecution {
             let _ = tracker.record(original_cmd, contextzip_cmd, 0, 0, elapsed_ms);
         }
     }
+
+    /// Print the better of (raw input, filtered output) to stdout, then track
+    /// the choice. Enforces the never-inflate guard for every command that
+    /// routes through it: a filter can never make output larger than raw.
+    /// `CONTEXTZIP_NO_INFLATE_GUARD=1` disables the guard for debugging.
+    #[allow(dead_code)]
+    pub fn emit(
+        &self,
+        original_cmd: &str,
+        contextzip_cmd: &str,
+        input: &str,
+        filtered: &str,
+        feature: &str,
+    ) {
+        let chosen = if std::env::var_os("CONTEXTZIP_NO_INFLATE_GUARD").is_some() {
+            filtered
+        } else {
+            choose_output(input, filtered)
+        };
+        print!("{chosen}");
+        self.track_with_feature(original_cmd, contextzip_cmd, input, chosen, feature);
+    }
+}
+
+/// Never-inflate guard: return the filtered text only if it is strictly
+/// smaller than the raw input; otherwise return the raw input. Compared on
+/// byte length of the (already ANSI-stripped) input the filter received, so
+/// ANSI removal still counts as a win. Ties go to filtered.
+#[allow(dead_code)]
+pub fn choose_output<'a>(input: &'a str, filtered: &'a str) -> &'a str {
+    if filtered.len() <= input.len() {
+        filtered
+    } else {
+        input
+    }
 }
 
 /// Format OsString args for tracking display.
@@ -1845,5 +1880,27 @@ mod tests {
         // Note: this may read real config file, but default is quiet=false
         let quiet = std::env::var("CONTEXTZIP_QUIET").is_ok();
         assert!(!quiet);
+    }
+
+    #[test]
+    fn choose_output_passes_through_when_filter_inflates() {
+        let input = "short raw output\n";
+        let filtered = "short raw output\nplus filter metadata that makes it bigger\n";
+        assert_eq!(choose_output(input, filtered), input);
+    }
+
+    #[test]
+    fn choose_output_keeps_filtered_when_smaller() {
+        let input = "a very long line repeated many times and then some more\n";
+        let filtered = "compact\n";
+        assert_eq!(choose_output(input, filtered), filtered);
+    }
+
+    #[test]
+    fn choose_output_ties_go_to_filtered() {
+        // Equal length: prefer filtered (already ANSI-stripped/normalized).
+        let input = "abcd";
+        let filtered = "wxyz";
+        assert_eq!(choose_output(input, filtered), filtered);
     }
 }
