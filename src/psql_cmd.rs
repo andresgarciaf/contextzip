@@ -49,17 +49,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
 
     let filtered = filter_psql_output(&stdout);
 
-    if let Some(hint) = crate::tee::tee_and_hint(&stdout, "psql", exit_code) {
-        println!("{}\n{}", filtered, hint);
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&stdout, "psql", exit_code) {
+        format!("{filtered}\n{hint}\n")
     } else {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    };
+    timer.emit(
         &format!("psql {}", args.join(" ")),
         &format!("contextzip psql {}", args.join(" ")),
         &stdout,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())

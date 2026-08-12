@@ -1162,17 +1162,17 @@ fn run_fallback(parse_error: clap::Error) -> Result<()> {
                 };
 
                 let filtered = toml_filter::apply_filter(filter, &stdout_raw);
-                println!("{}", filtered);
-                if let Some(hint) = tee_hint {
-                    println!("{}", hint);
-                }
-
-                timer.track(
+                let filtered_out = format!("{filtered}\n");
+                timer.emit(
                     &raw_command,
                     &format!("contextzip:toml {}", raw_command),
                     &stdout_raw,
-                    &filtered,
+                    &filtered_out,
+                    "cli",
                 );
+                if let Some(hint) = tee_hint {
+                    println!("{}", hint);
+                }
                 tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
                 if !output.status.success() {
@@ -1933,12 +1933,13 @@ fn main() -> Result<()> {
             } else {
                 raw.clone()
             };
-            println!("{}", filtered);
-            timer.track(
+            let filtered_out = format!("{filtered}\n");
+            timer.emit(
                 &format!("web {}", url),
                 &format!("contextzip web {}", url),
                 &raw,
-                &filtered,
+                &filtered_out,
+                "cli",
             );
         }
 

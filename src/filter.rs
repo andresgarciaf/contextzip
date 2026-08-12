@@ -34,6 +34,7 @@ impl std::fmt::Display for FilterLevel {
 
 pub trait FilterStrategy {
     fn filter(&self, content: &str, lang: &Language) -> String;
+    // pending: used for filter registry debug/listing; no caller yet
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
 }

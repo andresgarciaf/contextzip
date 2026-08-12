@@ -38,22 +38,24 @@ pub fn run(url: &str, args: &[String], verbose: u8) -> Result<()> {
             filename,
             format_size(size)
         );
-        println!("{}", msg);
-        timer.track(
+        let msg_out = format!("{msg}\n");
+        timer.emit(
             &format!("wget {}", url),
             "contextzip wget",
             &raw_output,
-            &msg,
+            &msg_out,
+            "cli",
         );
     } else {
         let error = parse_error(&stderr, &stdout);
         let msg = format!("{} FAILED: {}", compact_url(url), error);
-        println!("{}", msg);
-        timer.track(
+        let msg_out = format!("{msg}\n");
+        timer.emit(
             &format!("wget {}", url),
             "contextzip wget",
             &raw_output,
-            &msg,
+            &msg_out,
+            "cli",
         );
         std::process::exit(output.status.code().unwrap_or(1));
     }
@@ -105,23 +107,24 @@ pub fn run_stdout(url: &str, args: &[String], verbose: u8) -> Result<()> {
                 compressed.push_str(&format!("{}\n", line));
             }
         }
-        print!("{}", compressed);
-        timer.track(
+        timer.emit(
             &format!("wget -O - {}", url),
             "contextzip wget -o",
             &raw_output,
             &compressed,
+            "cli",
         );
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let error = parse_error(&stderr, "");
         let msg = format!("{} FAILED: {}", compact_url(url), error);
-        println!("{}", msg);
-        timer.track(
+        let msg_out = format!("{msg}\n");
+        timer.emit(
             &format!("wget -O - {}", url),
             "contextzip wget -o",
             &stderr,
-            &msg,
+            &msg_out,
+            "cli",
         );
         std::process::exit(output.status.code().unwrap_or(1));
     }
@@ -223,7 +226,6 @@ fn compact_url(url: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
 fn parse_error(stderr: &str, stdout: &str) -> String {
     // Common wget error patterns
     let combined = format!("{}\n{}", stderr, stdout);

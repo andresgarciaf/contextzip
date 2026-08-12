@@ -1056,13 +1056,13 @@ fn pr_create(args: &[String], _verbose: u8) -> Result<()> {
     };
 
     let filtered = ok_confirmation("created", &detail);
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         "gh pr create",
         "contextzip gh pr create",
         &stdout,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
     Ok(())
 }
@@ -1100,7 +1100,7 @@ fn pr_merge(args: &[String], _verbose: u8) -> Result<()> {
     };
 
     let filtered = ok_confirmation("merged", &detail);
-    println!("{}", filtered);
+    let filtered_out = format!("{filtered}\n");
 
     // Use stdout or detail as raw input (gh pr merge doesn't output much)
     let raw = if !stdout.trim().is_empty() {
@@ -1109,7 +1109,7 @@ fn pr_merge(args: &[String], _verbose: u8) -> Result<()> {
         detail.clone()
     };
 
-    timer.track("gh pr merge", "contextzip gh pr merge", &raw, &filtered);
+    timer.emit("gh pr merge", "contextzip gh pr merge", &raw, &filtered_out, "cli");
     Ok(())
 }
 
@@ -1145,16 +1145,12 @@ fn pr_diff(args: &[String], _verbose: u8) -> Result<()> {
     }
 
     let filtered = if raw.trim().is_empty() {
-        let msg = "No diff\n";
-        print!("{}", msg);
-        msg.to_string()
+        "No diff\n".to_string()
     } else {
-        let compacted = git::compact_diff(&raw, 500);
-        println!("{}", compacted);
-        compacted
+        format!("{}\n", git::compact_diff(&raw, 500))
     };
 
-    timer.track("gh pr diff", "contextzip gh pr diff", &raw, &filtered);
+    timer.emit("gh pr diff", "contextzip gh pr diff", &raw, &filtered, "cli");
     Ok(())
 }
 
@@ -1194,7 +1190,7 @@ fn pr_action(action: &str, args: &[String], _verbose: u8) -> Result<()> {
         .unwrap_or_default();
 
     let filtered = ok_confirmation(action, &pr_num);
-    println!("{}", filtered);
+    let filtered_out = format!("{filtered}\n");
 
     // Use stdout or pr_num as raw input
     let raw = if !stdout.trim().is_empty() {
@@ -1203,11 +1199,12 @@ fn pr_action(action: &str, args: &[String], _verbose: u8) -> Result<()> {
         pr_num.clone()
     };
 
-    timer.track(
+    timer.emit(
         &format!("gh pr {}", subcmd),
         &format!("contextzip gh pr {}", subcmd),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
     Ok(())
 }

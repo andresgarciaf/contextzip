@@ -5,6 +5,7 @@ use regex::Regex;
 pub enum ErrorType {
     UnknownFlag,
     CommandNotFound,
+    // pending: variant constructed only in tests; wired in as_str match arm; no production constructor yet
     #[allow(dead_code)]
     WrongSyntax,
     WrongPath,

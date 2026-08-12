@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# Use local release build if available, otherwise fall back to installed rtk
-if [ -f "./target/release/rtk" ]; then
-  RTK="$(cd "$(dirname ./target/release/rtk)" && pwd)/$(basename ./target/release/rtk)"
-elif command -v rtk &> /dev/null; then
-  RTK="$(command -v rtk)"
+# Use local release build if available, otherwise fall back to installed contextzip
+if [ -f "./target/release/contextzip" ]; then
+  CONTEXTZIP="$(cd "$(dirname ./target/release/contextzip)" && pwd)/$(basename ./target/release/contextzip)"
+elif command -v contextzip &> /dev/null; then
+  CONTEXTZIP="$(command -v contextzip)"
 else
-  echo "Error: rtk not found. Run 'cargo build --release' or install rtk."
+  echo "Error: contextzip not found. Run 'cargo build --release' or install contextzip."
   exit 1
 fi
 BENCH_DIR="$(pwd)/scripts/benchmark"
@@ -15,7 +15,7 @@ BENCH_DIR="$(pwd)/scripts/benchmark"
 # Mode local : générer les fichiers debug
 if [ -z "$CI" ]; then
   rm -rf "$BENCH_DIR"
-  mkdir -p "$BENCH_DIR/unix" "$BENCH_DIR/rtk" "$BENCH_DIR/diff"
+  mkdir -p "$BENCH_DIR/unix" "$BENCH_DIR/contextzip" "$BENCH_DIR/diff"
 fi
 
 # Nom de fichier safe
@@ -32,7 +32,7 @@ count_tokens() {
 
 # Compteurs globaux
 TOTAL_UNIX=0
-TOTAL_RTK=0
+TOTAL_CONTEXTZIP=0
 TOTAL_TESTS=0
 GOOD_TESTS=0
 FAIL_TESTS=0
@@ -42,50 +42,50 @@ SKIP_TESTS=0
 bench() {
   local name="$1"
   local unix_cmd="$2"
-  local rtk_cmd="$3"
+  local contextzip_cmd="$3"
 
   unix_out=$(eval "$unix_cmd" 2>/dev/null || true)
-  rtk_out=$(eval "$rtk_cmd" 2>/dev/null || true)
+  contextzip_out=$(eval "$contextzip_cmd" 2>/dev/null || true)
 
   unix_tokens=$(count_tokens "$unix_out")
-  rtk_tokens=$(count_tokens "$rtk_out")
+  contextzip_tokens=$(count_tokens "$contextzip_out")
 
   TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
   local icon=""
   local tag=""
 
-  if [ -z "$rtk_out" ]; then
+  if [ -z "$contextzip_out" ]; then
     icon="❌"
     tag="FAIL"
     FAIL_TESTS=$((FAIL_TESTS + 1))
     TOTAL_UNIX=$((TOTAL_UNIX + unix_tokens))
-    TOTAL_RTK=$((TOTAL_RTK + unix_tokens))
-  elif [ "$rtk_tokens" -ge "$unix_tokens" ] && [ "$unix_tokens" -gt 0 ]; then
+    TOTAL_CONTEXTZIP=$((TOTAL_CONTEXTZIP + unix_tokens))
+  elif [ "$contextzip_tokens" -ge "$unix_tokens" ] && [ "$unix_tokens" -gt 0 ]; then
     icon="⚠️"
     tag="SKIP"
     SKIP_TESTS=$((SKIP_TESTS + 1))
     TOTAL_UNIX=$((TOTAL_UNIX + unix_tokens))
-    TOTAL_RTK=$((TOTAL_RTK + unix_tokens))
+    TOTAL_CONTEXTZIP=$((TOTAL_CONTEXTZIP + unix_tokens))
   else
     icon="✅"
     tag="GOOD"
     GOOD_TESTS=$((GOOD_TESTS + 1))
     TOTAL_UNIX=$((TOTAL_UNIX + unix_tokens))
-    TOTAL_RTK=$((TOTAL_RTK + rtk_tokens))
+    TOTAL_CONTEXTZIP=$((TOTAL_CONTEXTZIP + contextzip_tokens))
   fi
 
   if [ "$tag" = "FAIL" ]; then
     printf "%s %-24s │ %-40s │ %-40s │ %6d → %6s (--)\n" \
-      "$icon" "$name" "$unix_cmd" "$rtk_cmd" "$unix_tokens" "-"
+      "$icon" "$name" "$unix_cmd" "$contextzip_cmd" "$unix_tokens" "-"
   else
     if [ "$unix_tokens" -gt 0 ]; then
-      local pct=$(( (unix_tokens - rtk_tokens) * 100 / unix_tokens ))
+      local pct=$(( (unix_tokens - contextzip_tokens) * 100 / unix_tokens ))
     else
       local pct=0
     fi
     printf "%s %-24s │ %-40s │ %-40s │ %6d → %6d (%+d%%)\n" \
-      "$icon" "$name" "$unix_cmd" "$rtk_cmd" "$unix_tokens" "$rtk_tokens" "$pct"
+      "$icon" "$name" "$unix_cmd" "$contextzip_cmd" "$unix_tokens" "$contextzip_tokens" "$pct"
   fi
 
   # Fichiers debug en local uniquement
@@ -101,7 +101,7 @@ bench() {
       "$name" "$ts" "$unix_cmd" "$unix_out" > "$BENCH_DIR/unix/${filename}.md"
 
     printf "# %s\n> %s\n\n\`\`\`bash\n$ %s\n\`\`\`\n\n\`\`\`\n%s\n\`\`\`\n" \
-      "$name" "$ts" "$rtk_cmd" "$rtk_out" > "$BENCH_DIR/rtk/${filename}.md"
+      "$name" "$ts" "$contextzip_cmd" "$contextzip_out" > "$BENCH_DIR/contextzip/${filename}.md"
 
     {
       echo "# Diff: $name"
@@ -109,7 +109,7 @@ bench() {
       echo ""
       echo "| Metric | Unix | RTK |"
       echo "|--------|------|-----|"
-      echo "| Tokens | $unix_tokens | $rtk_tokens |"
+      echo "| Tokens | $unix_tokens | $contextzip_tokens |"
       echo ""
       echo "## Unix"
       echo "\`\`\`"
@@ -118,7 +118,7 @@ bench() {
       echo ""
       echo "## RTK"
       echo "\`\`\`"
-      echo "$rtk_out"
+      echo "$contextzip_out"
       echo "\`\`\`"
     } > "$BENCH_DIR/diff/${prefix}-${filename}.md"
   fi
@@ -131,7 +131,7 @@ section() {
 }
 
 # ═══════════════════════════════════════════
-echo "RTK Benchmark"
+echo "ContextZip Benchmark"
 echo "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════"
 printf "   %-24s │ %-40s │ %-40s │ %s\n" "TEST" "SHELL" "RTK" "TOKENS"
 echo "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
@@ -140,51 +140,51 @@ echo "────────────────────────�
 # ls
 # ===================
 section "ls"
-bench "ls" "ls -la" "$RTK ls"
-bench "ls src/" "ls -la src/" "$RTK ls src/"
-bench "ls -l src/" "ls -l src/" "$RTK ls -l src/"
-bench "ls -la src/" "ls -la src/" "$RTK ls -la src/"
-bench "ls -lh src/" "ls -lh src/" "$RTK ls -lh src/"
-bench "ls src/ -l" "ls -l src/" "$RTK ls src/ -l"
-bench "ls -a" "ls -la" "$RTK ls -a"
-bench "ls multi" "ls -la src/ scripts/" "$RTK ls src/ scripts/"
+bench "ls" "ls -la" "$CONTEXTZIP ls"
+bench "ls src/" "ls -la src/" "$CONTEXTZIP ls src/"
+bench "ls -l src/" "ls -l src/" "$CONTEXTZIP ls -l src/"
+bench "ls -la src/" "ls -la src/" "$CONTEXTZIP ls -la src/"
+bench "ls -lh src/" "ls -lh src/" "$CONTEXTZIP ls -lh src/"
+bench "ls src/ -l" "ls -l src/" "$CONTEXTZIP ls src/ -l"
+bench "ls -a" "ls -la" "$CONTEXTZIP ls -a"
+bench "ls multi" "ls -la src/ scripts/" "$CONTEXTZIP ls src/ scripts/"
 
 # ===================
 # read
 # ===================
 section "read"
-bench "read" "cat src/main.rs" "$RTK read src/main.rs"
-bench "read -l minimal" "cat src/main.rs" "$RTK read src/main.rs -l minimal"
-bench "read -l aggressive" "cat src/main.rs" "$RTK read src/main.rs -l aggressive"
-bench "read -n" "cat -n src/main.rs" "$RTK read src/main.rs -n"
+bench "read" "cat src/main.rs" "$CONTEXTZIP read src/main.rs"
+bench "read -l minimal" "cat src/main.rs" "$CONTEXTZIP read src/main.rs -l minimal"
+bench "read -l aggressive" "cat src/main.rs" "$CONTEXTZIP read src/main.rs -l aggressive"
+bench "read -n" "cat -n src/main.rs" "$CONTEXTZIP read src/main.rs -n"
 
 # ===================
 # find
 # ===================
 section "find"
-bench "find *" "find . -type f" "$RTK find '*'"
-bench "find *.rs" "find . -name '*.rs' -type f" "$RTK find '*.rs'"
-bench "find --max 10" "find . -not -path './target/*' -not -path './.git/*' -type f | head -10" "$RTK find '*' --max 10"
-bench "find --max 100" "find . -not -path './target/*' -not -path './.git/*' -type f | head -100" "$RTK find '*' --max 100"
+bench "find *" "find . -type f" "$CONTEXTZIP find '*'"
+bench "find *.rs" "find . -name '*.rs' -type f" "$CONTEXTZIP find '*.rs'"
+bench "find --max 10" "find . -not -path './target/*' -not -path './.git/*' -type f | head -10" "$CONTEXTZIP find '*' --max 10"
+bench "find --max 100" "find . -not -path './target/*' -not -path './.git/*' -type f | head -100" "$CONTEXTZIP find '*' --max 100"
 
 # ===================
 # git
 # ===================
 section "git"
-bench "git status" "git status" "$RTK git status"
-bench "git log -n 10" "git log -10" "$RTK git log -n 10"
-bench "git log -n 5" "git log -5" "$RTK git log -n 5"
-bench "git diff" "git diff HEAD~1 2>/dev/null || echo ''" "$RTK git diff HEAD~1"
+bench "git status" "git status" "$CONTEXTZIP git status"
+bench "git log -n 10" "git log -10" "$CONTEXTZIP git log -n 10"
+bench "git log -n 5" "git log -5" "$CONTEXTZIP git log -n 5"
+bench "git diff" "git diff HEAD~1 2>/dev/null || echo ''" "$CONTEXTZIP git diff HEAD~1"
 
 # ===================
 # grep
 # ===================
 section "grep"
-bench "grep fn" "grep -rn 'fn ' src/ || true" "$RTK grep 'fn ' src/"
-bench "grep struct" "grep -rn 'struct ' src/ || true" "$RTK grep 'struct ' src/"
-bench "grep -l 40" "grep -rn 'fn ' src/ || true" "$RTK grep 'fn ' src/ -l 40"
-bench "grep --max 20" "grep -rn 'fn ' src/ | head -20 || true" "$RTK grep 'fn ' src/ --max 20"
-bench "grep -c" "grep -ron 'fn ' src/ || true" "$RTK grep 'fn ' src/ -c"
+bench "grep fn" "grep -rn 'fn ' src/ || true" "$CONTEXTZIP grep 'fn ' src/"
+bench "grep struct" "grep -rn 'struct ' src/ || true" "$CONTEXTZIP grep 'struct ' src/"
+bench "grep -l 40" "grep -rn 'fn ' src/ || true" "$CONTEXTZIP grep 'fn ' src/ -l 40"
+bench "grep --max 20" "grep -rn 'fn ' src/ | head -20 || true" "$CONTEXTZIP grep 'fn ' src/ --max 20"
+bench "grep -c" "grep -ron 'fn ' src/ || true" "$CONTEXTZIP grep 'fn ' src/ -c"
 
 # ===================
 # json
@@ -206,30 +206,30 @@ cat > /tmp/rtk_bench.json << 'JSONEOF'
   }
 }
 JSONEOF
-bench "json" "cat /tmp/rtk_bench.json" "$RTK json /tmp/rtk_bench.json"
-bench "json -d 2" "cat /tmp/rtk_bench.json" "$RTK json /tmp/rtk_bench.json -d 2"
+bench "json" "cat /tmp/rtk_bench.json" "$CONTEXTZIP json /tmp/rtk_bench.json"
+bench "json -d 2" "cat /tmp/rtk_bench.json" "$CONTEXTZIP json /tmp/rtk_bench.json -d 2"
 rm -f /tmp/rtk_bench.json
 
 # ===================
 # deps
 # ===================
 section "deps"
-bench "deps" "cat Cargo.toml" "$RTK deps"
+bench "deps" "cat Cargo.toml" "$CONTEXTZIP deps"
 
 # ===================
 # env
 # ===================
 section "env"
-bench "env" "env" "$RTK env"
-bench "env -f PATH" "env | grep PATH" "$RTK env -f PATH"
-bench "env --show-all" "env" "$RTK env --show-all"
+bench "env" "env" "$CONTEXTZIP env"
+bench "env -f PATH" "env | grep PATH" "$CONTEXTZIP env -f PATH"
+bench "env --show-all" "env" "$CONTEXTZIP env --show-all"
 
 # ===================
 # err
 # ===================
 section "err"
 if command -v cargo &>/dev/null; then
-  bench "err cargo build" "cargo build 2>&1 || true" "$RTK err cargo build"
+  bench "err cargo build" "cargo build 2>&1 || true" "$CONTEXTZIP err cargo build"
 else
   echo "⏭️  err cargo build (cargo not in PATH, skipped)"
 fi
@@ -239,7 +239,7 @@ fi
 # ===================
 section "test"
 if command -v cargo &>/dev/null; then
-  bench "test cargo test" "cargo test 2>&1 || true" "$RTK test cargo test"
+  bench "test cargo test" "cargo test 2>&1 || true" "$CONTEXTZIP test cargo test"
 else
   echo "⏭️  test cargo test (cargo not in PATH, skipped)"
 fi
@@ -264,7 +264,7 @@ cat > "$LOG_FILE" << 'LOGEOF'
 2024-01-15 10:00:12 INFO  Processing request
 2024-01-15 10:00:13 INFO  Request completed
 LOGEOF
-bench "log" "cat $LOG_FILE" "$RTK log $LOG_FILE"
+bench "log" "cat $LOG_FILE" "$CONTEXTZIP log $LOG_FILE"
 rm -f "$LOG_FILE"
 
 # ===================
@@ -272,12 +272,12 @@ rm -f "$LOG_FILE"
 # ===================
 section "summary"
 if command -v cargo &>/dev/null; then
-  bench "summary cargo --help" "cargo --help" "$RTK summary cargo --help"
+  bench "summary cargo --help" "cargo --help" "$CONTEXTZIP summary cargo --help"
 else
   echo "⏭️  summary cargo --help (cargo not in PATH, skipped)"
 fi
 if command -v rustc &>/dev/null; then
-  bench "summary rustc --help" "rustc --help 2>/dev/null || echo 'rustc not found'" "$RTK summary rustc --help"
+  bench "summary rustc --help" "rustc --help 2>/dev/null || echo 'rustc not found'" "$CONTEXTZIP summary rustc --help"
 else
   echo "⏭️  summary rustc --help (rustc not in PATH, skipped)"
 fi
@@ -287,10 +287,10 @@ fi
 # ===================
 section "cargo"
 if command -v cargo &>/dev/null; then
-  bench "cargo build" "cargo build 2>&1 || true" "$RTK cargo build"
-  bench "cargo test" "cargo test 2>&1 || true" "$RTK cargo test"
-  bench "cargo clippy" "cargo clippy 2>&1 || true" "$RTK cargo clippy"
-  bench "cargo check" "cargo check 2>&1 || true" "$RTK cargo check"
+  bench "cargo build" "cargo build 2>&1 || true" "$CONTEXTZIP cargo build"
+  bench "cargo test" "cargo test 2>&1 || true" "$CONTEXTZIP cargo test"
+  bench "cargo clippy" "cargo clippy 2>&1 || true" "$CONTEXTZIP cargo clippy"
+  bench "cargo check" "cargo check 2>&1 || true" "$CONTEXTZIP cargo check"
 else
   echo "⏭️  cargo build/test/clippy/check (cargo not in PATH, skipped)"
 fi
@@ -299,27 +299,27 @@ fi
 # diff
 # ===================
 section "diff"
-bench "diff" "diff Cargo.toml LICENSE 2>&1 || true" "$RTK diff Cargo.toml LICENSE"
+bench "diff" "diff Cargo.toml LICENSE 2>&1 || true" "$CONTEXTZIP diff Cargo.toml LICENSE"
 
 # ===================
 # smart
 # ===================
 section "smart"
-bench "smart main.rs" "cat src/main.rs" "$RTK smart src/main.rs"
+bench "smart main.rs" "cat src/main.rs" "$CONTEXTZIP smart src/main.rs"
 
 # ===================
 # wc
 # ===================
 section "wc"
-bench "wc" "wc Cargo.toml src/main.rs" "$RTK wc Cargo.toml src/main.rs"
+bench "wc" "wc Cargo.toml src/main.rs" "$CONTEXTZIP wc Cargo.toml src/main.rs"
 
 # ===================
 # curl
 # ===================
 section "curl"
 if command -v curl &> /dev/null; then
-  bench "curl json" "curl -s https://httpbin.org/json" "$RTK curl https://httpbin.org/json"
-  bench "curl text" "curl -s https://httpbin.org/robots.txt" "$RTK curl https://httpbin.org/robots.txt"
+  bench "curl json" "curl -s https://httpbin.org/json" "$CONTEXTZIP curl https://httpbin.org/json"
+  bench "curl text" "curl -s https://httpbin.org/robots.txt" "$CONTEXTZIP curl https://httpbin.org/robots.txt"
 fi
 
 # ===================
@@ -327,7 +327,7 @@ fi
 # ===================
 if command -v wget &> /dev/null; then
   section "wget"
-  bench "wget" "wget -qO- https://httpbin.org/robots.txt" "$RTK wget https://httpbin.org/robots.txt -O"
+  bench "wget" "wget -qO- https://httpbin.org/robots.txt" "$CONTEXTZIP wget https://httpbin.org/robots.txt -O"
 fi
 
 # ===================
@@ -337,42 +337,42 @@ if [ -f "package.json" ]; then
   section "modern JS stack"
 
   if command -v tsc &> /dev/null || [ -f "node_modules/.bin/tsc" ]; then
-    bench "tsc" "tsc --noEmit 2>&1 || true" "$RTK tsc --noEmit"
+    bench "tsc" "tsc --noEmit 2>&1 || true" "$CONTEXTZIP tsc --noEmit"
   fi
 
   if command -v prettier &> /dev/null || [ -f "node_modules/.bin/prettier" ]; then
-    bench "prettier --check" "prettier --check . 2>&1 || true" "$RTK prettier --check ."
+    bench "prettier --check" "prettier --check . 2>&1 || true" "$CONTEXTZIP prettier --check ."
   fi
 
   if command -v eslint &> /dev/null || [ -f "node_modules/.bin/eslint" ]; then
-    bench "lint" "eslint . 2>&1 || true" "$RTK lint ."
+    bench "lint" "eslint . 2>&1 || true" "$CONTEXTZIP lint ."
   fi
 
   if [ -f "next.config.js" ] || [ -f "next.config.mjs" ] || [ -f "next.config.ts" ]; then
     if command -v next &> /dev/null || [ -f "node_modules/.bin/next" ]; then
-      bench "next build" "next build 2>&1 || true" "$RTK next build"
+      bench "next build" "next build 2>&1 || true" "$CONTEXTZIP next build"
     fi
   fi
 
   if [ -f "playwright.config.ts" ] || [ -f "playwright.config.js" ]; then
     if command -v playwright &> /dev/null || [ -f "node_modules/.bin/playwright" ]; then
-      bench "playwright test" "playwright test 2>&1 || true" "$RTK playwright test"
+      bench "playwright test" "playwright test 2>&1 || true" "$CONTEXTZIP playwright test"
     fi
   fi
 
   if [ -f "prisma/schema.prisma" ]; then
     if command -v prisma &> /dev/null || [ -f "node_modules/.bin/prisma" ]; then
-      bench "prisma generate" "prisma generate 2>&1 || true" "$RTK prisma generate"
+      bench "prisma generate" "prisma generate 2>&1 || true" "$CONTEXTZIP prisma generate"
     fi
   fi
 
   if command -v vitest &> /dev/null || [ -f "node_modules/.bin/vitest" ]; then
-    bench "vitest run" "vitest run --reporter=json 2>&1 || true" "$RTK vitest run"
+    bench "vitest run" "vitest run --reporter=json 2>&1 || true" "$CONTEXTZIP vitest run"
   fi
 
   if command -v pnpm &> /dev/null; then
-    bench "pnpm list" "pnpm list --depth 0 2>&1 || true" "$RTK pnpm list --depth 0"
-    bench "pnpm outdated" "pnpm outdated 2>&1 || true" "$RTK pnpm outdated"
+    bench "pnpm list" "pnpm list --depth 0 2>&1 || true" "$CONTEXTZIP pnpm list --depth 0"
+    bench "pnpm outdated" "pnpm outdated 2>&1 || true" "$CONTEXTZIP pnpm outdated"
   fi
 fi
 
@@ -381,8 +381,8 @@ fi
 # ===================
 if command -v gh &> /dev/null && git rev-parse --git-dir &> /dev/null; then
   section "gh"
-  bench "gh pr list" "gh pr list 2>&1 || true" "$RTK gh pr list"
-  bench "gh run list" "gh run list 2>&1 || true" "$RTK gh run list"
+  bench "gh pr list" "gh pr list 2>&1 || true" "$CONTEXTZIP gh pr list"
+  bench "gh run list" "gh run list 2>&1 || true" "$CONTEXTZIP gh run list"
 fi
 
 # ===================
@@ -390,8 +390,8 @@ fi
 # ===================
 if command -v docker &> /dev/null; then
   section "docker"
-  bench "docker ps" "docker ps 2>/dev/null || true" "$RTK docker ps"
-  bench "docker images" "docker images 2>/dev/null || true" "$RTK docker images"
+  bench "docker ps" "docker ps 2>/dev/null || true" "$CONTEXTZIP docker ps"
+  bench "docker images" "docker images 2>/dev/null || true" "$CONTEXTZIP docker images"
 fi
 
 # ===================
@@ -399,8 +399,8 @@ fi
 # ===================
 if command -v kubectl &> /dev/null; then
   section "kubectl"
-  bench "kubectl pods" "kubectl get pods 2>/dev/null || true" "$RTK kubectl pods"
-  bench "kubectl services" "kubectl get services 2>/dev/null || true" "$RTK kubectl services"
+  bench "kubectl pods" "kubectl get pods 2>/dev/null || true" "$CONTEXTZIP kubectl pods"
+  bench "kubectl services" "kubectl get services 2>/dev/null || true" "$CONTEXTZIP kubectl services"
 fi
 
 # ===================
@@ -453,8 +453,8 @@ def test_process_data_none():
     assert process_data(None) == []
 PYEOF
 
-  bench "ruff check" "ruff check . 2>&1 || true" "$RTK ruff check ."
-  bench "pytest" "pytest -v 2>&1 || true" "$RTK pytest -v"
+  bench "ruff check" "ruff check . 2>&1 || true" "$CONTEXTZIP ruff check ."
+  bench "pytest" "pytest -v 2>&1 || true" "$CONTEXTZIP pytest -v"
 
   cd - > /dev/null
   rm -rf "$PYTHON_FIXTURE"
@@ -517,13 +517,64 @@ func TestMultiply(t *testing.T) {
 }
 GOEOF
 
-  bench "golangci-lint" "golangci-lint run 2>&1 || true" "$RTK golangci-lint run"
-  bench "go test" "go test -v 2>&1 || true" "$RTK go test -v"
-  bench "go build" "go build ./... 2>&1 || true" "$RTK go build ./..."
-  bench "go vet" "go vet ./... 2>&1 || true" "$RTK go vet ./..."
+  bench "golangci-lint" "golangci-lint run 2>&1 || true" "$CONTEXTZIP golangci-lint run"
+  bench "go test" "go test -v 2>&1 || true" "$CONTEXTZIP go test -v"
+  bench "go build" "go build ./... 2>&1 || true" "$CONTEXTZIP go build ./..."
+  bench "go vet" "go vet ./... 2>&1 || true" "$CONTEXTZIP go vet ./..."
 
   cd - > /dev/null
   rm -rf "$GO_FIXTURE"
+fi
+
+# ===================
+# mypy (live-binary bench; no offline fixture possible - mypy_cmd has no stdin mode)
+# Skipped commands: aws (no creds), terraform (no subcommand + no creds),
+#   docker (daemon not running), kubectl (not installed)
+# ===================
+section "mypy"
+
+if command -v mypy &>/dev/null || python3 -m mypy --version &>/dev/null 2>&1; then
+  MYPY_DIR=$(mktemp -d)
+  cat > "$MYPY_DIR/sample.py" << 'PYEOF'
+from typing import Optional
+
+def maybe_upper(x: Optional[str]) -> str:
+    return x.upper()
+
+def bad_return(flag: bool) -> int:
+    if flag:
+        return 42
+
+def takes_int(x: int) -> None:
+    print(x)
+
+takes_int("hello")
+takes_int(3.14)
+result: int = maybe_upper("world")
+PYEOF
+  cat > "$MYPY_DIR/multi.py" << 'PYEOF'
+from typing import Dict, Optional
+import json
+
+def parse_config(path: str) -> Dict[str, str]:
+    with open(path) as f:
+        data = json.load(f)
+    return data
+
+def compute_ratio(a: int, b: int) -> float:
+    if b == 0:
+        return None
+    return a / b
+
+x: int = "not an int"
+y: str = 42
+PYEOF
+  bench "mypy" \
+    "mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true" \
+    "$CONTEXTZIP mypy --ignore-missing-imports \"$MYPY_DIR/sample.py\" \"$MYPY_DIR/multi.py\" 2>&1 || true"
+  rm -rf "$MYPY_DIR"
+else
+  echo "  mypy: mypy not in PATH, skipped"
 fi
 
 # ===================
@@ -550,12 +601,12 @@ bench_rewrite() {
   fi
 }
 
-bench_rewrite "rewrite quoted"       "$RTK rewrite 'git status'"     "rtk git status"
-bench_rewrite "rewrite unquoted"     "$RTK rewrite git status"       "rtk git status"
-bench_rewrite "rewrite ls -al"       "$RTK rewrite ls -al"           "rtk ls -al"
-bench_rewrite "rewrite npm exec"     "$RTK rewrite npm exec"         "rtk npm exec"
-bench_rewrite "rewrite cargo test"   "$RTK rewrite cargo test"       "rtk cargo test"
-bench_rewrite "rewrite compound"     "$RTK rewrite 'cargo test && git push'" "rtk cargo test && rtk git push"
+bench_rewrite "rewrite quoted"       "$CONTEXTZIP rewrite 'git status'"     "contextzip git status"
+bench_rewrite "rewrite unquoted"     "$CONTEXTZIP rewrite git status"       "contextzip git status"
+bench_rewrite "rewrite ls -al"       "$CONTEXTZIP rewrite ls -al"           "contextzip ls -al"
+bench_rewrite "rewrite npm exec"     "$CONTEXTZIP rewrite npm exec"         "contextzip npm exec"
+bench_rewrite "rewrite cargo test"   "$CONTEXTZIP rewrite cargo test"       "contextzip cargo test"
+bench_rewrite "rewrite compound"     "$CONTEXTZIP rewrite 'cargo test && git push'" "contextzip cargo test && contextzip git push"
 
 # ===================
 # Résumé global
@@ -566,7 +617,7 @@ echo "════════════════════════�
 if [ "$TOTAL_TESTS" -gt 0 ]; then
   GOOD_PCT=$((GOOD_TESTS * 100 / TOTAL_TESTS))
   if [ "$TOTAL_UNIX" -gt 0 ]; then
-    TOTAL_SAVED=$((TOTAL_UNIX - TOTAL_RTK))
+    TOTAL_SAVED=$((TOTAL_UNIX - TOTAL_CONTEXTZIP))
     TOTAL_SAVE_PCT=$((TOTAL_SAVED * 100 / TOTAL_UNIX))
   else
     TOTAL_SAVED=0
@@ -575,12 +626,12 @@ if [ "$TOTAL_TESTS" -gt 0 ]; then
 
   echo ""
   echo "  ✅ $GOOD_TESTS good  ⚠️ $SKIP_TESTS skip  ❌ $FAIL_TESTS fail    $GOOD_TESTS/$TOTAL_TESTS ($GOOD_PCT%)"
-  echo "  Tokens: $TOTAL_UNIX → $TOTAL_RTK  (-$TOTAL_SAVE_PCT%)"
+  echo "  Tokens: $TOTAL_UNIX → $TOTAL_CONTEXTZIP  (-$TOTAL_SAVE_PCT%)"
   echo ""
 
   # Fichiers debug en local
   if [ -z "$CI" ]; then
-    echo "  Debug: $BENCH_DIR/{unix,rtk,diff}/"
+    echo "  Debug: $BENCH_DIR/{unix,contextzip,diff}/"
   fi
   echo ""
 

@@ -28,6 +28,7 @@ struct EslintResult {
     warning_count: usize,
 }
 
+// pending: serde populates all fields; module/obj/line/column/message reserved for future verbose pylint output
 #[derive(Debug, Deserialize)]
 struct PylintDiagnostic {
     #[serde(rename = "type")]
@@ -206,17 +207,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         .status
         .code()
         .unwrap_or(if output.status.success() { 0 } else { 1 });
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "lint", exit_code) {
-        println!("{}\n{}", filtered, hint);
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "lint", exit_code) {
+        format!("{filtered}\n{hint}\n")
     } else {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    };
+    timer.emit(
         &format!("{} {}", linter, args.join(" ")),
         &format!("contextzip lint {} {}", linter, args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     if !output.status.success() {

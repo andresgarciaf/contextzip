@@ -59,12 +59,12 @@ pub fn run_err(command: &str, verbose: u8) -> Result<()> {
         .status
         .code()
         .unwrap_or(if output.status.success() { 0 } else { 1 });
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "err", exit_code) {
-        println!("{}\n{}", summary, hint);
+    let printed = if let Some(hint) = crate::tee::tee_and_hint(&raw, "err", exit_code) {
+        format!("{summary}\n{hint}\n")
     } else {
-        println!("{}", summary);
-    }
-    timer.track(command, "contextzip run-err", &raw, &summary);
+        format!("{summary}\n")
+    };
+    timer.emit(command, "contextzip run-err", &raw, &printed, "cli");
     Ok(())
 }
 
@@ -100,12 +100,12 @@ pub fn run_test(command: &str, verbose: u8) -> Result<()> {
         .code()
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let summary = extract_test_summary(&raw, command);
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "test", exit_code) {
-        println!("{}\n{}", summary, hint);
+    let printed = if let Some(hint) = crate::tee::tee_and_hint(&raw, "test", exit_code) {
+        format!("{summary}\n{hint}\n")
     } else {
-        println!("{}", summary);
-    }
-    timer.track(command, "contextzip run-test", &raw, &summary);
+        format!("{summary}\n")
+    };
+    timer.emit(command, "contextzip run-test", &raw, &printed, "cli");
     Ok(())
 }
 

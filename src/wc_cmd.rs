@@ -41,13 +41,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     // Detect which columns the user requested
     let mode = detect_mode(args);
     let filtered = filter_wc_output(&raw, &mode);
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("wc {}", args.join(" ")),
         &format!("contextzip wc {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     Ok(())

@@ -37,17 +37,17 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     let filtered = filter_tsc_output(&raw);
 
     let exit_code = output.status.code().unwrap_or(1);
-    if let Some(hint) = crate::tee::tee_and_hint(&raw, "tsc", exit_code) {
-        println!("{}\n{}", filtered, hint);
+    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "tsc", exit_code) {
+        format!("{filtered}\n{hint}\n")
     } else {
-        println!("{}", filtered);
-    }
-
-    timer.track(
+        format!("{filtered}\n")
+    };
+    timer.emit(
         &format!("tsc {}", args.join(" ")),
         &format!("contextzip tsc {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve tsc exit code for CI/CD compatibility

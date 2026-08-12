@@ -49,13 +49,13 @@ pub fn run_format(args: &[String], verbose: u8) -> Result<()> {
     let check_mode = !has_write_mode_override(args);
     let filtered =
         format_report_summary_or_raw(report_path.as_deref(), check_mode, &raw, command_started_at);
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("dotnet format {}", args.join(" ")),
         &format!("contextzip dotnet format {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     if cleanup_report_path {
@@ -236,13 +236,13 @@ fn run_dotnet_with_binlog(subcommand: &str, args: &[String], verbose: u8) -> Res
         filtered
     };
 
-    println!("{}", output_to_print);
-
-    timer.track(
+    let output_to_print_out = format!("{output_to_print}\n");
+    timer.emit(
         &format!("dotnet {} {}", subcommand, args.join(" ")),
         &format!("contextzip dotnet {} {}", subcommand, args.join(" ")),
         &raw,
-        &output_to_print,
+        &output_to_print_out,
+        "cli",
     );
 
     cleanup_temp_file(&binlog_path);

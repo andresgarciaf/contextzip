@@ -192,6 +192,7 @@ enum LineFilter {
 #[derive(Debug)]
 pub struct CompiledFilter {
     pub name: String,
+    // pending: intended for `contextzip verify --verbose` filter listing; no caller yet
     #[allow(dead_code)]
     pub description: Option<String>,
     match_regex: Regex,

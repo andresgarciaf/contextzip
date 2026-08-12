@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🔍 Validating RTK documentation consistency..."
+echo "Validating contextzip documentation consistency..."
 
 # 1. Nombre de modules cohérent
 MAIN_MODULES=$(grep -c '^mod ' src/main.rs)
@@ -40,7 +40,7 @@ done
 echo "✅ Python/Go commands: documented in README.md and CLAUDE.md"
 
 # 4. Hooks cohérents avec doc
-HOOK_FILE=".claude/hooks/rtk-rewrite.sh"
+HOOK_FILE=".claude/hooks/contextzip-rewrite.sh"
 if [ -f "$HOOK_FILE" ]; then
   echo "🪝 Checking hook rewrites..."
   for cmd in "${PYTHON_GO_CMDS[@]}"; do

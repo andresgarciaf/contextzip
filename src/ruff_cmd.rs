@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 
+// pending: serde populates row/column; reserved for future verbose ruff line:col display
 #[derive(Debug, Deserialize)]
 struct RuffLocation {
     #[allow(dead_code)]
@@ -13,12 +14,14 @@ struct RuffLocation {
     column: usize,
 }
 
+// pending: serde populates applicability; reserved for future fix-applicability display
 #[derive(Debug, Deserialize)]
 struct RuffFix {
     #[allow(dead_code)]
     applicability: Option<String>,
 }
 
+// pending: serde populates message/location/end_location; reserved for future verbose per-issue output
 #[derive(Debug, Deserialize)]
 struct RuffDiagnostic {
     code: String,
@@ -98,13 +101,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         raw.trim().to_string()
     };
 
-    println!("{}", filtered);
-
-    timer.track(
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(
         &format!("ruff {}", args.join(" ")),
         &format!("contextzip ruff {}", args.join(" ")),
         &raw,
-        &filtered,
+        &filtered_out,
+        "cli",
     );
 
     // Preserve exit code for CI/CD

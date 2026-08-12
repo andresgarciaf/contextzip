@@ -277,12 +277,13 @@ pub fn run(
 
     if files.is_empty() {
         let msg = format!("0 for '{}'", effective_pattern);
-        println!("{}", msg);
-        timer.track(
+        let msg_out = format!("{msg}\n");
+        timer.emit(
             &format!("find {} -name '{}'", path, effective_pattern),
             "contextzip find",
             &raw_output,
-            &msg,
+            &msg_out,
+            "cli",
         );
         return Ok(());
     }

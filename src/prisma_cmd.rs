@@ -71,13 +71,8 @@ fn run_generate(args: &[String], verbose: u8) -> Result<()> {
     }
 
     let filtered = filter_prisma_generate(&raw);
-    println!("{}", filtered);
-    timer.track(
-        "prisma generate",
-        "contextzip prisma generate",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("prisma generate", "contextzip prisma generate", &raw, &filtered_out, "cli");
 
     Ok(())
 }
@@ -138,13 +133,8 @@ fn run_migrate(subcommand: MigrateSubcommand, args: &[String], verbose: u8) -> R
         MigrateSubcommand::Deploy => filter_migrate_deploy(&raw),
     };
 
-    println!("{}", filtered);
-    timer.track(
-        cmd_name,
-        &format!("contextzip {}", cmd_name),
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit(cmd_name, &format!("contextzip {}", cmd_name), &raw, &filtered_out, "cli");
 
     Ok(())
 }
@@ -182,13 +172,8 @@ fn run_db_push(args: &[String], verbose: u8) -> Result<()> {
     }
 
     let filtered = filter_db_push(&raw);
-    println!("{}", filtered);
-    timer.track(
-        "prisma db push",
-        "contextzip prisma db push",
-        &raw,
-        &filtered,
-    );
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("prisma db push", "contextzip prisma db push", &raw, &filtered_out, "cli");
 
     Ok(())
 }

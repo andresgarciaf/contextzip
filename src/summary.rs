@@ -46,8 +46,8 @@ pub fn run(command: &str, verbose: u8) -> Result<()> {
     let raw = format!("{}\n{}", stdout, stderr);
 
     let summary = summarize_output(&raw, command, output.status.success());
-    println!("{}", summary);
-    timer.track(command, "contextzip summary", &raw, &summary);
+    let summary_out = format!("{summary}\n");
+    timer.emit(command, "contextzip summary", &raw, &summary_out, "cli");
     Ok(())
 }
 

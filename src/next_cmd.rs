@@ -37,9 +37,8 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
 
     let filtered = filter_next_build(&raw);
 
-    println!("{}", filtered);
-
-    timer.track("next build", "contextzip next build", &raw, &filtered);
+    let filtered_out = format!("{filtered}\n");
+    timer.emit("next build", "contextzip next build", &raw, &filtered_out, "cli");
 
     // Preserve exit code for CI/CD
     if !output.status.success() {

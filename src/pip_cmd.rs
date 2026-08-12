@@ -42,11 +42,12 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         }
     };
 
-    timer.track(
+    timer.emit(
         &format!("{} {}", base_cmd, args.join(" ")),
         &format!("contextzip {} {}", base_cmd, args.join(" ")),
         &cmd_str,
         &filtered,
+        "cli",
     );
 
     Ok(())
@@ -77,8 +78,7 @@ fn run_list(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, Str
     let stderr = String::from_utf8_lossy(&output.stderr);
     let raw = format!("{}\n{}", stdout, stderr);
 
-    let filtered = filter_pip_list(&stdout);
-    println!("{}", filtered);
+    let filtered = format!("{}\n", filter_pip_list(&stdout));
 
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
@@ -112,8 +112,7 @@ fn run_outdated(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String,
     let stderr = String::from_utf8_lossy(&output.stderr);
     let raw = format!("{}\n{}", stdout, stderr);
 
-    let filtered = filter_pip_outdated(&stdout);
-    println!("{}", filtered);
+    let filtered = format!("{}\n", filter_pip_outdated(&stdout));
 
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
@@ -145,8 +144,7 @@ fn run_install(base_cmd: &str, args: &[String], verbose: u8) -> Result<(String, 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let raw = format!("{}\n{}", stdout, stderr);
 
-    let filtered = crate::pkg_cmd::compress_pkg_log(&raw);
-    println!("{}", filtered);
+    let filtered = format!("{}\n", crate::pkg_cmd::compress_pkg_log(&raw));
 
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
@@ -176,16 +174,14 @@ fn run_passthrough(base_cmd: &str, args: &[String], verbose: u8) -> Result<(Stri
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let raw = format!("{}\n{}", stdout, stderr);
 
-    print!("{}", stdout);
     eprint!("{}", stderr);
 
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
     }
 
-    Ok((raw.clone(), raw))
+    Ok((stdout.to_string(), stdout.to_string()))
 }
 
 /// Filter pip list JSON output
