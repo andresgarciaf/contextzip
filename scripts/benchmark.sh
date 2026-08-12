@@ -107,7 +107,7 @@ bench() {
       echo "# Diff: $name"
       echo "> $ts"
       echo ""
-      echo "| Metric | Unix | RTK |"
+      echo "| Metric | Unix | ContextZip |"
       echo "|--------|------|-----|"
       echo "| Tokens | $unix_tokens | $contextzip_tokens |"
       echo ""
@@ -116,7 +116,7 @@ bench() {
       echo "$unix_out"
       echo "\`\`\`"
       echo ""
-      echo "## RTK"
+      echo "## ContextZip"
       echo "\`\`\`"
       echo "$contextzip_out"
       echo "\`\`\`"
@@ -133,7 +133,7 @@ section() {
 # ═══════════════════════════════════════════
 echo "ContextZip Benchmark"
 echo "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════"
-printf "   %-24s │ %-40s │ %-40s │ %s\n" "TEST" "SHELL" "RTK" "TOKENS"
+printf "   %-24s │ %-40s │ %-40s │ %s\n" "TEST" "SHELL" "CONTEXTZIP" "TOKENS"
 echo "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
 # ===================
@@ -190,9 +190,9 @@ bench "grep -c" "grep -ron 'fn ' src/ || true" "$CONTEXTZIP grep 'fn ' src/ -c"
 # json
 # ===================
 section "json"
-cat > /tmp/rtk_bench.json << 'JSONEOF'
+cat > /tmp/cz_bench.json << 'JSONEOF'
 {
-  "name": "rtk",
+  "name": "contextzip",
   "version": "0.2.1",
   "config": {
     "debug": false,
@@ -206,9 +206,9 @@ cat > /tmp/rtk_bench.json << 'JSONEOF'
   }
 }
 JSONEOF
-bench "json" "cat /tmp/rtk_bench.json" "$CONTEXTZIP json /tmp/rtk_bench.json"
-bench "json -d 2" "cat /tmp/rtk_bench.json" "$CONTEXTZIP json /tmp/rtk_bench.json -d 2"
-rm -f /tmp/rtk_bench.json
+bench "json" "cat /tmp/cz_bench.json" "$CONTEXTZIP json /tmp/cz_bench.json"
+bench "json -d 2" "cat /tmp/cz_bench.json" "$CONTEXTZIP json /tmp/cz_bench.json -d 2"
+rm -f /tmp/cz_bench.json
 
 # ===================
 # deps
@@ -248,7 +248,7 @@ fi
 # log
 # ===================
 section "log"
-LOG_FILE="/tmp/rtk_bench_sample.log"
+LOG_FILE="/tmp/cz_bench_sample.log"
 cat > "$LOG_FILE" << 'LOGEOF'
 2024-01-15 10:00:01 INFO  Application started
 2024-01-15 10:00:02 INFO  Loading configuration
@@ -415,7 +415,7 @@ if command -v python3 &> /dev/null && command -v ruff &> /dev/null && command -v
   # pyproject.toml
   cat > pyproject.toml << 'PYEOF'
 [project]
-name = "rtk-bench"
+name = "contextzip-bench"
 version = "0.1.0"
 
 [tool.ruff]

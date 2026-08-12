@@ -5,6 +5,19 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
 
+/// Compose the text handed to `emit`: the filtered output plus an optional
+/// tee hint (a pointer to the full raw output, written on failure), each
+/// newline-terminated. An empty filtered body with no hint yields an empty
+/// string, which the never-inflate guard passes through as "print nothing".
+fn compose_output(filtered: &str, hint: Option<String>) -> String {
+    match (filtered.is_empty(), hint) {
+        (true, None) => String::new(),
+        (true, Some(h)) => format!("{h}\n"),
+        (false, None) => format!("{filtered}\n"),
+        (false, Some(h)) => format!("{filtered}\n{h}\n"),
+    }
+}
+
 // pending: serde Deserialize populates all fields; only action/package/test/output/failed_build are read in filter logic
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -75,11 +88,7 @@ pub fn run_test(args: &[String], verbose: u8) -> Result<()> {
         eprintln!("{}", stderr.trim());
     }
 
-    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_test", exit_code) {
-        format!("{filtered}\n{hint}\n")
-    } else {
-        format!("{filtered}\n")
-    };
+    let filtered_out = compose_output(&filtered, crate::tee::tee_and_hint(&raw, "go_test", exit_code));
     timer.emit(
         &format!("go test {}", args.join(" ")),
         &format!("contextzip go test {}", args.join(" ")),
@@ -124,17 +133,7 @@ pub fn run_build(args: &[String], verbose: u8) -> Result<()> {
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_go_build(&raw);
 
-    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_build", exit_code) {
-        if !filtered.is_empty() {
-            format!("{filtered}\n{hint}\n")
-        } else {
-            format!("{hint}\n")
-        }
-    } else if !filtered.is_empty() {
-        format!("{filtered}\n")
-    } else {
-        String::new()
-    };
+    let filtered_out = compose_output(&filtered, crate::tee::tee_and_hint(&raw, "go_build", exit_code));
     timer.emit(
         &format!("go build {}", args.join(" ")),
         &format!("contextzip go build {}", args.join(" ")),
@@ -179,17 +178,7 @@ pub fn run_vet(args: &[String], verbose: u8) -> Result<()> {
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let filtered = filter_go_vet(&raw);
 
-    let filtered_out = if let Some(hint) = crate::tee::tee_and_hint(&raw, "go_vet", exit_code) {
-        if !filtered.is_empty() {
-            format!("{filtered}\n{hint}\n")
-        } else {
-            format!("{hint}\n")
-        }
-    } else if !filtered.is_empty() {
-        format!("{filtered}\n")
-    } else {
-        String::new()
-    };
+    let filtered_out = compose_output(&filtered, crate::tee::tee_and_hint(&raw, "go_vet", exit_code));
     timer.emit(
         &format!("go vet {}", args.join(" ")),
         &format!("contextzip go vet {}", args.join(" ")),
@@ -520,6 +509,21 @@ fn compact_package_name(package: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compose_output_variants() {
+        // empty filtered, no hint -> nothing (guard prints raw passthrough)
+        assert_eq!(compose_output("", None), "");
+        // empty filtered, with hint -> just the hint
+        assert_eq!(compose_output("", Some("[full output: x]".into())), "[full output: x]\n");
+        // filtered, no hint -> filtered + newline
+        assert_eq!(compose_output("2 passed", None), "2 passed\n");
+        // filtered, with hint -> both, each newline-terminated
+        assert_eq!(
+            compose_output("FAIL", Some("[full output: x]".into())),
+            "FAIL\n[full output: x]\n"
+        );
+    }
 
     #[test]
     fn test_filter_go_test_all_pass() {
