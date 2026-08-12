@@ -174,16 +174,14 @@ fn run_passthrough(base_cmd: &str, args: &[String], verbose: u8) -> Result<(Stri
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let raw = format!("{}\n{}", stdout, stderr);
 
-    print!("{}", stdout);
     eprint!("{}", stderr);
 
     if !output.status.success() {
         std::process::exit(output.status.code().unwrap_or(1));
     }
 
-    Ok((raw.clone(), raw))
+    Ok((stdout.to_string(), stdout.to_string()))
 }
 
 /// Filter pip list JSON output
