@@ -1485,7 +1485,7 @@ mod tests {
     fn test_custom_db_path_env() {
         use std::env;
 
-        let custom_path = "/tmp/rtk_test_custom.db";
+        let custom_path = "/tmp/cz_test_custom.db";
         env::set_var("CONTEXTZIP_DB_PATH", custom_path);
 
         let db_path = get_db_path().expect("Failed to get db path");

@@ -1162,7 +1162,12 @@ fn run_fallback(parse_error: clap::Error) -> Result<()> {
                 };
 
                 let filtered = toml_filter::apply_filter(filter, &stdout_raw);
-                let filtered_out = format!("{filtered}\n");
+                // Fold the tee hint into the emitted output so it routes through the
+                // never-inflate guard and is tracked, consistent with other tee sites.
+                let filtered_out = match &tee_hint {
+                    Some(hint) => format!("{filtered}\n{hint}\n"),
+                    None => format!("{filtered}\n"),
+                };
                 timer.emit(
                     &raw_command,
                     &format!("contextzip:toml {}", raw_command),
@@ -1170,9 +1175,6 @@ fn run_fallback(parse_error: clap::Error) -> Result<()> {
                     &filtered_out,
                     "cli",
                 );
-                if let Some(hint) = tee_hint {
-                    println!("{}", hint);
-                }
                 tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
                 if !output.status.success() {
