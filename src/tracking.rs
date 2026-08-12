@@ -107,6 +107,7 @@ pub struct CommandRecord {
     /// Output tokens (filtered command output size)
     pub output_tokens: usize,
     /// Number of tokens saved (input - output)
+    // pending: populated from DB; read only in tests; future use in detailed history export
     #[allow(dead_code)]
     pub saved_tokens: usize,
     /// Savings percentage ((saved / input) * 100)
@@ -569,6 +570,7 @@ impl Tracker {
     ///     summary.total_saved, summary.avg_savings_pct);
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    // pending: unfiltered summary convenience wrapper; no caller yet (all callers use get_summary_filtered)
     #[allow(dead_code)]
     pub fn get_summary(&self) -> Result<GainSummary> {
         self.get_summary_filtered(None) // delegate to filtered variant
@@ -959,6 +961,7 @@ impl Tracker {
     /// }
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    // pending: unfiltered recent-history convenience wrapper; no caller yet (all callers use get_recent_filtered)
     #[allow(dead_code)]
     pub fn get_recent(&self, limit: usize) -> Result<Vec<CommandRecord>> {
         self.get_recent_filtered(limit, None) // delegate to filtered variant
@@ -1079,6 +1082,7 @@ fn get_db_path() -> Result<PathBuf> {
 pub struct ParseFailureRecord {
     pub timestamp: String,
     pub raw_command: String,
+    // pending: populated from DB; reserved for future verbose parse-failure reporting in gain
     #[allow(dead_code)]
     pub error_message: String,
     pub fallback_succeeded: bool,
@@ -1349,42 +1353,6 @@ pub fn args_display(args: &[OsString]) -> String {
         .map(|a| a.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Track a command execution (legacy function, use [`TimedExecution`] for new code).
-///
-/// # Deprecation Notice
-///
-/// This function is deprecated. Use [`TimedExecution`] instead for automatic
-/// timing and cleaner API.
-///
-/// # Arguments
-///
-/// - `original_cmd`: Standard command (e.g., "ls -la")
-/// - `contextzip_cmd`: ContextZip command used (e.g., "contextzip ls")
-/// - `input`: Standard command output (for token estimation)
-/// - `output`: ContextZip command output (for token estimation)
-///
-/// # Migration
-///
-/// ```no_run
-/// # use contextzip::tracking::{track, TimedExecution};
-/// // Old (deprecated)
-/// track("ls -la", "contextzip ls", "input", "output");
-///
-/// // New (preferred)
-/// let timer = TimedExecution::start();
-/// timer.track("ls -la", "contextzip ls", "input", "output");
-/// ```
-#[deprecated(note = "Use TimedExecution instead")]
-#[allow(dead_code)]
-pub fn track(original_cmd: &str, contextzip_cmd: &str, input: &str, output: &str) {
-    let input_tokens = estimate_tokens(input);
-    let output_tokens = estimate_tokens(output);
-
-    if let Ok(tracker) = Tracker::new() {
-        let _ = tracker.record(original_cmd, contextzip_cmd, input_tokens, output_tokens, 0);
-    }
 }
 
 #[cfg(test)]

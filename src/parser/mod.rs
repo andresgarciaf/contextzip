@@ -29,6 +29,7 @@ pub enum ParseResult<T> {
 
 impl<T> ParseResult<T> {
     /// Unwrap the parsed data, panicking on Passthrough
+    // pending: test/debug helper for parser consumers; no production caller yet
     #[allow(dead_code)]
     pub fn unwrap(self) -> T {
         match self {
@@ -39,6 +40,7 @@ impl<T> ParseResult<T> {
     }
 
     /// Get the tier level (1 = Full, 2 = Degraded, 3 = Passthrough)
+    // pending: used for testing/debugging parse tier selection; no production caller yet
     #[allow(dead_code)]
     pub fn tier(&self) -> u8 {
         match self {
@@ -49,12 +51,14 @@ impl<T> ParseResult<T> {
     }
 
     /// Check if parsing succeeded (Full or Degraded)
+    // pending: convenience predicate for parser consumers; no production caller yet
     #[allow(dead_code)]
     pub fn is_ok(&self) -> bool {
         !matches!(self, ParseResult::Passthrough(_))
     }
 
     /// Map the parsed data while preserving tier
+    // pending: transformation combinator for parser consumers; no production caller yet
     #[allow(dead_code)]
     pub fn map<U, F>(self, f: F) -> ParseResult<U>
     where
@@ -68,6 +72,7 @@ impl<T> ParseResult<T> {
     }
 
     /// Get warnings if Degraded tier
+    // pending: exposes degradation warnings to parser consumers; no production caller yet
     #[allow(dead_code)]
     pub fn warnings(&self) -> Vec<String> {
         match self {
@@ -90,6 +95,7 @@ pub trait OutputParser: Sized {
     fn parse(input: &str) -> ParseResult<Self::Output>;
 
     /// Parse with explicit tier preference (for testing/debugging)
+    // pending: forces tier ceiling during parser testing; no production caller yet
     #[allow(dead_code)]
     fn parse_with_tier(input: &str, max_tier: u8) -> ParseResult<Self::Output> {
         let result = Self::parse(input);

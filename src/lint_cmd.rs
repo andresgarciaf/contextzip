@@ -28,6 +28,7 @@ struct EslintResult {
     warning_count: usize,
 }
 
+// pending: serde populates all fields; module/obj/line/column/message reserved for future verbose pylint output
 #[derive(Debug, Deserialize)]
 struct PylintDiagnostic {
     #[serde(rename = "type")]

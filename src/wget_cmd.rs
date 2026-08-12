@@ -226,7 +226,6 @@ fn compact_url(url: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
 fn parse_error(stderr: &str, stdout: &str) -> String {
     // Common wget error patterns
     let combined = format!("{}\n{}", stderr, stdout);

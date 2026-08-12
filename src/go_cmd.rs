@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
 
+// pending: serde Deserialize populates all fields; only action/package/test/output/failed_build are read in filter logic
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct GoTestEvent {

@@ -9,9 +9,11 @@ use std::collections::HashMap;
 struct Position {
     #[serde(rename = "Filename")]
     filename: String,
+    // pending: populated by JSON deserialize; reserved for future line:col display in verbose mode
     #[serde(rename = "Line")]
     #[allow(dead_code)]
     line: usize,
+    // pending: populated by JSON deserialize; reserved for future line:col display in verbose mode
     #[serde(rename = "Column")]
     #[allow(dead_code)]
     column: usize,
@@ -21,6 +23,7 @@ struct Position {
 struct Issue {
     #[serde(rename = "FromLinter")]
     from_linter: String,
+    // pending: populated by JSON deserialize; reserved for future verbose per-issue message display
     #[serde(rename = "Text")]
     #[allow(dead_code)]
     text: String,

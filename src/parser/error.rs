@@ -1,6 +1,7 @@
 /// Parser error types for structured output parsing
 use thiserror::Error;
 
+// pending: public error type for parser consumers; no external caller yet
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum ParseError {

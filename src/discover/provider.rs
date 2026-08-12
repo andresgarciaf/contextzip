@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 pub struct ExtractedCommand {
     pub command: String,
     pub output_len: Option<usize>,
+    // pending: reserved for future cross-session deduplication and session-level grouping
     #[allow(dead_code)]
     pub session_id: String,
     /// Actual output content (first ~1000 chars for error detection)
@@ -18,6 +19,7 @@ pub struct ExtractedCommand {
     /// Whether the tool_result indicated an error
     pub is_error: bool,
     /// Chronological sequence index within the session
+    // pending: reserved for future ordering/ranking of commands within a session
     #[allow(dead_code)]
     pub sequence_index: usize,
 }

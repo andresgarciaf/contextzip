@@ -22,6 +22,7 @@ pub struct TestFailure {
 }
 
 /// Linting result (eslint, biome, tsc, etc.)
+// pending: canonical type for lint parsers; TokenFormatter impl exists; no production constructor yet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct LintResult {
@@ -33,6 +34,7 @@ pub struct LintResult {
     pub issues: Vec<LintIssue>,
 }
 
+// pending: used in LintResult.issues; no production constructor until lint parser is wired
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct LintIssue {
@@ -44,6 +46,7 @@ pub struct LintIssue {
     pub message: String,
 }
 
+// pending: severity enum used in formatter match arms; no production LintIssue constructor yet
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum LintSeverity {
@@ -70,6 +73,7 @@ pub struct Dependency {
 }
 
 /// Build output (next, webpack, vite, cargo, etc.)
+// pending: canonical type for build parsers; TokenFormatter impl exists; no production constructor yet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct BuildOutput {
@@ -81,6 +85,7 @@ pub struct BuildOutput {
     pub routes: Vec<RouteInfo>,
 }
 
+// pending: used in BuildOutput.bundles; no production constructor until build parser is wired
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct BundleInfo {
@@ -89,6 +94,7 @@ pub struct BundleInfo {
     pub gzip_size_bytes: Option<u64>,
 }
 
+// pending: used in BuildOutput.routes; no production constructor until build parser is wired
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct RouteInfo {
@@ -98,6 +104,7 @@ pub struct RouteInfo {
 }
 
 /// Git operation result
+// pending: canonical type for structured git output; no production consumer yet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct GitResult {
@@ -108,6 +115,7 @@ pub struct GitResult {
     pub commits: Vec<GitCommit>,
 }
 
+// pending: used in GitResult.commits; no production constructor yet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct GitCommit {
@@ -118,6 +126,7 @@ pub struct GitCommit {
 }
 
 /// Generic command output (for tools without specific types)
+// pending: fallback type for unrecognized tools; no production consumer yet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct GenericOutput {
